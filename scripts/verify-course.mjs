@@ -16,6 +16,10 @@ const requiredMarkers = [
   "Terminal goals",
   "Safe browser shell",
   "run arbitrary commands",
+  "Progressive hint",
+  "Review",
+  "Achievements",
+  "Command encyclopedia",
 ];
 
 const missingMarkers = requiredMarkers.filter((marker) => !html.includes(marker));

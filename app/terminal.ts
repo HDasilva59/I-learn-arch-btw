@@ -22,6 +22,105 @@ export type TerminalResult =
   | (TerminalLine & { session: TerminalSession; normalizedInput: string })
   | { kind: "clear"; text: ""; session: TerminalSession; normalizedInput: string };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function optionalString(value: Record<string, unknown>, key: string): string | undefined | null {
+  const candidate = value[key];
+
+  return candidate === undefined ? undefined : typeof candidate === "string" ? candidate : null;
+}
+
+function parseFileEntry(value: unknown): FileEntry | null {
+  if (!isRecord(value) || (value.kind !== "directory" && value.kind !== "file")) {
+    return null;
+  }
+
+  const mode = optionalString(value, "mode");
+  const owner = optionalString(value, "owner");
+  const group = optionalString(value, "group");
+
+  if (mode === null || owner === null || group === null) {
+    return null;
+  }
+
+  if (value.kind === "file") {
+    return typeof value.content === "string"
+      ? { kind: "file", content: value.content, ...(mode === undefined ? {} : { mode }), ...(owner === undefined ? {} : { owner }), ...(group === undefined ? {} : { group }) }
+      : null;
+  }
+
+  return { kind: "directory", ...(mode === undefined ? {} : { mode }), ...(owner === undefined ? {} : { owner }), ...(group === undefined ? {} : { group }) };
+}
+
+function parseStringArray(value: unknown): readonly string[] | null {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? [...value] : null;
+}
+
+function parseStringMap(value: unknown): Readonly<Record<string, string>> | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const parsed: Record<string, string> = {};
+
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "string") {
+      return null;
+    }
+
+    parsed[key] = item;
+  }
+
+  return parsed;
+}
+
+export function parseTerminalSession(value: unknown): TerminalSession | null {
+  if (!isRecord(value) || typeof value.cwd !== "string" || !value.cwd.startsWith("/")) {
+    return null;
+  }
+
+  if (!isRecord(value.filesystem)) {
+    return null;
+  }
+
+  const filesystem: Record<string, FileEntry> = {};
+
+  for (const [path, rawEntry] of Object.entries(value.filesystem)) {
+    if (!path.startsWith("/")) {
+      return null;
+    }
+
+    const entry = parseFileEntry(rawEntry);
+
+    if (!entry) {
+      return null;
+    }
+
+    filesystem[path] = entry;
+  }
+
+  const installedPackages = parseStringArray(value.installedPackages);
+  const environment = parseStringMap(value.environment);
+  const aliases = parseStringMap(value.aliases);
+  const history = parseStringArray(value.history);
+  const cwdEntry = filesystem[value.cwd];
+
+  if (!installedPackages || !environment || !aliases || !history || cwdEntry?.kind !== "directory" || filesystem["/"]?.kind !== "directory") {
+    return null;
+  }
+
+  return {
+    cwd: value.cwd,
+    filesystem,
+    installedPackages,
+    environment,
+    aliases,
+    history,
+  };
+}
+
 type PackageRecord = {
   name: string;
   version: string;
@@ -134,6 +233,27 @@ function parentPath(path: string): string {
 
 function entryAt(session: TerminalSession, path: string): FileEntry | undefined {
   return session.filesystem[path];
+}
+
+function canAccessFile(
+  entry: FileEntry,
+  session: TerminalSession,
+  needsRoot: boolean,
+  access: "read" | "write" | "execute",
+): boolean {
+  if (needsRoot || !entry.mode || !/^[0-7]{3,4}$/.test(entry.mode)) {
+    return true;
+  }
+
+  const digits = entry.mode.slice(-3);
+  const user = session.environment.USER ?? "student";
+  const owner = entry.owner ?? "student";
+  const group = entry.group ?? "student";
+  const digit = owner === user ? digits[0] : group === user ? digits[1] : digits[2];
+  const value = Number(digit);
+  const mask = access === "read" ? 4 : access === "write" ? 2 : 1;
+
+  return (value & mask) !== 0;
 }
 
 function withFileSystem(session: TerminalSession, filesystem: Record<string, FileEntry>): TerminalSession {
@@ -456,8 +576,20 @@ export function runTerminalCommand(input: string, session: TerminalSession): Ter
       const entry = entryAt(session, path);
 
       if (entry?.kind === "file") {
+        if (!canAccessFile(entry, session, needsRoot, "read")) {
+          return error(`${command}: ${target}: Permission denied`, session, normalizedInput);
+        }
+
         return output(entry.content, session, normalizedInput);
       }
+
+      if (command === "less" && entry?.kind === "directory") {
+        return error(`less: ${target}: Is a directory`, session, normalizedInput);
+      }
+    }
+
+    if (command === "less") {
+      return error(`less: ${target ?? "(missing file)"}: No such file or directory`, session, normalizedInput);
     }
 
     return output("This safe shell includes short examples for the commands in the lesson. Try man pacman.", session, normalizedInput);
@@ -475,7 +607,15 @@ export function runTerminalCommand(input: string, session: TerminalSession): Ter
     }
 
     if (entry.kind === "file") {
+      if (!canAccessFile(entry, session, needsRoot, "read")) {
+        return error(`ls: cannot access '${target}': Permission denied`, session, normalizedInput);
+      }
+
       return output(long ? longListing(basename(path), entry) : basename(path), session, normalizedInput);
+    }
+
+    if (!canAccessFile(entry, session, needsRoot, "read")) {
+      return error(`ls: cannot open directory '${target}': Permission denied`, session, normalizedInput);
     }
 
     const children = visibleChildEntries(session, path, showHidden);
@@ -495,6 +635,10 @@ export function runTerminalCommand(input: string, session: TerminalSession): Ter
       return error(`bash: cd: ${target}: Not a directory`, session, normalizedInput);
     }
 
+    if (!canAccessFile(entry, session, needsRoot, "execute")) {
+      return error(`bash: cd: ${target}: Permission denied`, session, normalizedInput);
+    }
+
     return output("", { ...session, cwd: path, environment: { ...session.environment, PWD: path } }, normalizedInput);
   }
 
@@ -509,6 +653,10 @@ export function runTerminalCommand(input: string, session: TerminalSession): Ter
 
     if (entry.kind !== "file") {
       return error(`cat: ${target}: Is a directory`, session, normalizedInput);
+    }
+
+    if (!canAccessFile(entry, session, needsRoot, "read")) {
+      return error(`cat: ${target}: Permission denied`, session, normalizedInput);
     }
 
     return output(entry.content, session, normalizedInput);
@@ -656,6 +804,10 @@ export function runTerminalCommand(input: string, session: TerminalSession): Ter
         return error(`bash: ${target}: Is a directory`, session, normalizedInput);
       }
 
+      if (existing && !canAccessFile(existing, session, needsRoot, "write")) {
+        return error(`bash: ${target}: Permission denied`, session, normalizedInput);
+      }
+
       const parent = entryAt(session, parentPath(path));
 
       if (!parent || parent.kind !== "directory") {
@@ -681,6 +833,10 @@ export function runTerminalCommand(input: string, session: TerminalSession): Ter
 
     if (entry.kind !== "file") {
       return error(`grep: ${target}: Is a directory`, session, normalizedInput);
+    }
+
+    if (!canAccessFile(entry, session, needsRoot, "read")) {
+      return error(`grep: ${target}: Permission denied`, session, normalizedInput);
     }
 
     const matches = fileLines(entry.content).filter((line) => line.includes(query));
@@ -719,12 +875,19 @@ export function runTerminalCommand(input: string, session: TerminalSession): Ter
   if (command === "head" || command === "tail") {
     const lineFlagIndex = args.indexOf("-n");
     const count = lineFlagIndex >= 0 ? Number(args[lineFlagIndex + 1]) : 10;
-    const target = args.find((arg, index) => !arg.startsWith("-") && index !== lineFlagIndex + 1);
+    const targetArguments = lineFlagIndex >= 0
+      ? args.filter((_, index) => index !== lineFlagIndex && index !== lineFlagIndex + 1)
+      : args;
+    const target = targetArguments.find((arg) => !arg.startsWith("-"));
     const path = target ? resolvePath(target, session.cwd) : "";
     const entry = path ? entryAt(session, path) : undefined;
 
     if (!entry || entry.kind !== "file" || !Number.isFinite(count)) {
       return error(`${command}: cannot read '${target ?? ""}'`, session, normalizedInput);
+    }
+
+    if (!canAccessFile(entry, session, needsRoot, "read")) {
+      return error(`${command}: cannot open '${target}' for reading: Permission denied`, session, normalizedInput);
     }
 
     const lines = fileLines(entry.content);
@@ -751,6 +914,10 @@ export function runTerminalCommand(input: string, session: TerminalSession): Ter
 
     if (!entry || entry.kind !== "file") {
       return error(`sort: ${target ?? "(missing file)"}: No such file or directory`, session, normalizedInput);
+    }
+
+    if (!canAccessFile(entry, session, needsRoot, "read")) {
+      return error(`sort: ${target}: Permission denied`, session, normalizedInput);
     }
 
     return output(fileLines(entry.content).sort((left, right) => left.localeCompare(right)).join("\n"), session, normalizedInput);
@@ -848,7 +1015,22 @@ export function runTerminalCommand(input: string, session: TerminalSession): Ter
       return error(`${command}: cannot access '${target ?? ""}'`, session, normalizedInput);
     }
 
+    if (!canAccessFile(entry, session, needsRoot, "read")) {
+      return error(`${command}: ${target}: Permission denied`, session, normalizedInput);
+    }
+
     if (command === "gzip") {
+      if (!keep && !canAccessFile(entry, session, needsRoot, "write")) {
+        return error(`${command}: ${target}: Permission denied`, session, normalizedInput);
+      }
+
+      const compressedPath = `${path}.gz`;
+      const existingCompressed = entryAt(session, compressedPath);
+
+      if (existingCompressed && !canAccessFile(existingCompressed, session, needsRoot, "write")) {
+        return error(`${command}: ${target}: Permission denied`, session, normalizedInput);
+      }
+
       const filesystem: Record<string, FileEntry> = { ...session.filesystem, [`${path}.gz`]: { kind: "file", content: `GZIP\n${entry.content}` } };
 
       if (!keep) {

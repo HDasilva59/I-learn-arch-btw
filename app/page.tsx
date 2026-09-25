@@ -2,7 +2,21 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 
-import { createInitialTerminalSession, runTerminalCommand, type TerminalLine, type TerminalSession } from "./terminal";
+import {
+  createInitialTerminalSession,
+  parseTerminalSession,
+  runTerminalCommand,
+  type TerminalLine,
+  type TerminalSession,
+} from "./terminal";
+import {
+  dueReviewCount,
+  recordLearningDay,
+  recordTaskAttempt,
+  type AchievementId,
+  type ReviewRecord,
+  type StreakState,
+} from "./learning";
 
 type LessonId =
   | "terminal"
@@ -45,6 +59,7 @@ type Lesson = {
   duration: string;
   summary: string;
   terminalTasks: readonly [TerminalTask, ...TerminalTask[]];
+  challenge?: Challenge;
   takeaways: readonly string[];
   exercise: {
     question: string;
@@ -82,14 +97,46 @@ type TerminalTask = {
   success: string;
 };
 
+type ChallengeStep = {
+  id: string;
+  title: string;
+  prompt: string;
+  command: string;
+  guideId: keyof typeof COMMAND_GUIDES;
+  check: ChallengeCheck;
+};
+
+type ChallengeCheck =
+  | { kind: "output-includes"; text: string }
+  | { kind: "exists"; path: string; entryKind: "file" | "directory" }
+  | { kind: "file-content"; path: string; text: string }
+  | { kind: "mode"; path: string; mode: string }
+  | { kind: "moved"; from: string; to: string };
+
+type Challenge = {
+  id: string;
+  title: string;
+  summary: string;
+  steps: readonly [ChallengeStep, ...ChallengeStep[]];
+  success: string;
+};
+
 type LessonState = {
   completedTaskIds: readonly string[];
   quizPassed: boolean;
 };
 
+type ChallengeState = {
+  completedStepIds: readonly string[];
+};
+
 type Progress = {
   activeLessonId: LessonId;
   lessonStates: Partial<Record<LessonId, LessonState>>;
+  challengeStates: Readonly<Record<string, ChallengeState>>;
+  reviewRecords: Readonly<Record<string, ReviewRecord>>;
+  streak: StreakState;
+  achievements: readonly AchievementId[];
 };
 
 type ExerciseState = {
@@ -100,12 +147,27 @@ type ExerciseState = {
 
 type TerminalDisplayLine = TerminalLine | { kind: "command"; text: string };
 
-const STORAGE_KEY = "i-learn-arch-btw-progress-v2";
+type ReviewTarget = {
+  lesson: Lesson;
+  task: TerminalTask;
+  key: string;
+};
+
+const STORAGE_KEY = "i-learn-arch-btw-progress-v3";
+const LEGACY_STORAGE_KEY = "i-learn-arch-btw-progress-v2";
+const TERMINAL_STORAGE_KEY = "i-learn-arch-btw-terminal-v1";
 
 const EMPTY_LESSON_STATE: LessonState = {
   completedTaskIds: [],
   quizPassed: false,
 };
+
+const ACHIEVEMENT_LABELS: readonly { id: AchievementId; label: string }[] = [
+  { id: "first-command", label: "First command" },
+  { id: "error-decoder", label: "Error decoder" },
+  { id: "three-day-streak", label: "Three-day streak" },
+  { id: "mission-complete", label: "Mission complete" },
+];
 
 const COMMAND_GUIDES = {
   pwd: {
@@ -617,6 +679,18 @@ const LESSONS: readonly Lesson[] = [
       { id: "echo", command: "echo 'read the wiki' > practice/todo.txt", guideId: "echo", title: "Write a note", prompt: "Write a short note into todo.txt with redirection.", explanation: "Write a short note into a file.", success: "You wrote data into a file using shell redirection." },
       { id: "ls-practice", command: "ls practice", guideId: "ls", title: "Inspect the result", prompt: "List the files inside your new workspace.", explanation: "Inspect the directory you just made.", success: "You verified the workspace instead of assuming it worked." },
     ],
+    challenge: {
+      id: "build-a-private-workspace",
+      title: "Build a private workspace",
+      summary: "Create a project folder, leave a note in it, then lock that note down.",
+      steps: [
+        { id: "project-dir", title: "Create the project folder", prompt: "Create /home/student/project.", command: "mkdir /home/student/project", guideId: "mkdir", check: { kind: "exists", path: "/home/student/project", entryKind: "directory" } },
+        { id: "project-readme", title: "Add a README", prompt: "Create an empty README.md inside /home/student/project.", command: "touch /home/student/project/README.md", guideId: "touch", check: { kind: "exists", path: "/home/student/project/README.md", entryKind: "file" } },
+        { id: "project-note", title: "Write the first note", prompt: "Write 'ship it' into /home/student/project/README.md.", command: "echo 'ship it' > /home/student/project/README.md", guideId: "echo", check: { kind: "file-content", path: "/home/student/project/README.md", text: "ship it" } },
+        { id: "project-lock", title: "Restrict the note", prompt: "Give the owner read and write access to README.md, and remove access for everyone else.", command: "chmod 600 /home/student/project/README.md", guideId: "chmod", check: { kind: "mode", path: "/home/student/project/README.md", mode: "600" } },
+      ],
+      success: "You built a small private workspace by chaining commands whose effects stayed in the virtual filesystem.",
+    },
     takeaways: [
       "mkdir creates directories; touch creates empty files.",
       "Use > carefully: it replaces the contents of a file.",
@@ -824,6 +898,18 @@ const LESSONS: readonly Lesson[] = [
       { id: "file-remove", command: "rm files/renamed.txt", guideId: "rm", title: "Remove one file", prompt: "Remove the renamed file from the virtual workspace.", explanation: "Delete a file in this safe simulation.", success: "You removed one file. In a real shell, rm does not use a recycle bin." },
       { id: "file-list", command: "ls files", guideId: "ls", title: "Verify the result", prompt: "List the remaining files in files.", explanation: "Check what remains after the operation.", success: "You inspected the final state instead of assuming it." },
     ],
+    challenge: {
+      id: "rescue-the-notes",
+      title: "Rescue the notes",
+      summary: "Find a note, move it into an archive, then verify the new location.",
+      steps: [
+        { id: "find-notes", title: "Find the note", prompt: "Find notes.txt below /home/student.", command: "find /home/student -name notes.txt", guideId: "findName", check: { kind: "output-includes", text: "/home/student/notes.txt" } },
+        { id: "archive-dir", title: "Make an archive folder", prompt: "Create /home/student/archive.", command: "mkdir -p /home/student/archive", guideId: "mkdir", check: { kind: "exists", path: "/home/student/archive", entryKind: "directory" } },
+        { id: "move-notes", title: "Move the note", prompt: "Move /home/student/notes.txt into /home/student/archive/notes.txt.", command: "mv /home/student/notes.txt /home/student/archive/notes.txt", guideId: "mv", check: { kind: "moved", from: "/home/student/notes.txt", to: "/home/student/archive/notes.txt" } },
+        { id: "verify-archive", title: "Verify the archive", prompt: "List the files inside /home/student/archive.", command: "ls /home/student/archive", guideId: "ls", check: { kind: "output-includes", text: "notes.txt" } },
+      ],
+      success: "You completed a small recovery job. The file moved and the archive now contains it.",
+    },
     takeaways: [
       "cp preserves the source; mv changes its path or name.",
       "rm is immediate in a real shell. Verify the path before using it.",
@@ -1084,6 +1170,10 @@ const LESSONS: readonly Lesson[] = [
 const DEFAULT_PROGRESS: Progress = {
   activeLessonId: "terminal",
   lessonStates: {},
+  challengeStates: {},
+  reviewRecords: {},
+  streak: { current: 0, best: 0, lastActiveDay: null },
+  achievements: [],
 };
 
 const INITIAL_TERMINAL_LINES: readonly TerminalDisplayLine[] = [
@@ -1132,8 +1222,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function isAchievementId(value: unknown): value is AchievementId {
+  return value === "first-command" || value === "error-decoder" || value === "three-day-streak" || value === "mission-complete";
+}
+
 function lessonStateFor(progress: Progress, lessonId: LessonId): LessonState {
   return progress.lessonStates[lessonId] ?? EMPTY_LESSON_STATE;
+}
+
+function challengeStateFor(progress: Progress, challengeId: string): ChallengeState {
+  return progress.challengeStates[challengeId] ?? { completedStepIds: [] };
+}
+
+function taskKey(lessonId: LessonId, taskId: string): string {
+  return `${lessonId}:${taskId}`;
 }
 
 function updateLessonState(progress: Progress, lessonId: LessonId, update: (state: LessonState) => LessonState): Progress {
@@ -1148,6 +1250,45 @@ function updateLessonState(progress: Progress, lessonId: LessonId, update: (stat
   };
 }
 
+function updateChallengeState(progress: Progress, challengeId: string, update: (state: ChallengeState) => ChallengeState): Progress {
+  const currentState = challengeStateFor(progress, challengeId);
+
+  return {
+    ...progress,
+    challengeStates: {
+      ...progress.challengeStates,
+      [challengeId]: update(currentState),
+    },
+  };
+}
+
+function withAchievement(progress: Progress, achievement: AchievementId): Progress {
+  return progress.achievements.includes(achievement)
+    ? progress
+    : { ...progress, achievements: [...progress.achievements, achievement] };
+}
+
+function recordPractice(progress: Progress, key: string, outcome: "success" | "failure", usedHint: boolean, now: number): Progress {
+  const reviewRecords = recordTaskAttempt(progress.reviewRecords, key, { kind: outcome, usedHint }, now);
+  let nextProgress: Progress = {
+    ...progress,
+    reviewRecords,
+    streak: recordLearningDay(progress.streak, now),
+  };
+
+  if (outcome === "success") {
+    nextProgress = withAchievement(nextProgress, "first-command");
+  } else {
+    nextProgress = withAchievement(nextProgress, "error-decoder");
+  }
+
+  if (nextProgress.streak.current >= 3) {
+    nextProgress = withAchievement(nextProgress, "three-day-streak");
+  }
+
+  return nextProgress;
+}
+
 function isLessonComplete(lesson: Lesson, progress: Progress): boolean {
   const state = lessonStateFor(progress, lesson.id);
 
@@ -1155,7 +1296,7 @@ function isLessonComplete(lesson: Lesson, progress: Progress): boolean {
 }
 
 function readProgress(): Progress {
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+  const raw = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_STORAGE_KEY);
 
   if (!raw) {
     return DEFAULT_PROGRESS;
@@ -1190,12 +1331,142 @@ function readProgress(): Progress {
       }
     }
 
+    const challengeStates: Record<string, ChallengeState> = {};
+
+    if (isRecord(parsed.challengeStates)) {
+      for (const lesson of LESSONS) {
+        const challenge = lesson.challenge;
+
+        if (!challenge) {
+          continue;
+        }
+
+        const rawState = parsed.challengeStates[challenge.id];
+
+        if (!isRecord(rawState) || !Array.isArray(rawState.completedStepIds)) {
+          continue;
+        }
+
+        challengeStates[challenge.id] = {
+          completedStepIds: [...new Set(rawState.completedStepIds.filter((stepId): stepId is string => typeof stepId === "string" && challenge.steps.some((step) => step.id === stepId)))],
+        };
+      }
+    }
+
+    const reviewRecords: Record<string, ReviewRecord> = {};
+
+    if (isRecord(parsed.reviewRecords)) {
+      for (const [key, rawRecord] of Object.entries(parsed.reviewRecords)) {
+        if (!isRecord(rawRecord) || typeof rawRecord.attempts !== "number" || typeof rawRecord.mistakes !== "number" || typeof rawRecord.intervalDays !== "number" || typeof rawRecord.nextReviewAt !== "number") {
+          continue;
+        }
+
+        reviewRecords[key] = {
+          attempts: Math.max(0, Math.floor(rawRecord.attempts)),
+          mistakes: Math.max(0, Math.floor(rawRecord.mistakes)),
+          intervalDays: Math.max(1, Math.floor(rawRecord.intervalDays)),
+          nextReviewAt: Math.max(0, rawRecord.nextReviewAt),
+        };
+      }
+    }
+
+    const rawStreak = isRecord(parsed.streak) ? parsed.streak : {};
+    const streak: StreakState = {
+      current: typeof rawStreak.current === "number" ? Math.max(0, Math.floor(rawStreak.current)) : 0,
+      best: typeof rawStreak.best === "number" ? Math.max(0, Math.floor(rawStreak.best)) : 0,
+      lastActiveDay: typeof rawStreak.lastActiveDay === "string" ? rawStreak.lastActiveDay : null,
+    };
+
+    const achievements = Array.isArray(parsed.achievements)
+      ? parsed.achievements.filter(isAchievementId)
+      : [];
+
     return {
       activeLessonId,
       lessonStates,
+      challengeStates,
+      reviewRecords,
+      streak,
+      achievements: [...new Set(achievements)],
     };
   } catch {
     return DEFAULT_PROGRESS;
+  }
+}
+
+function readTerminalSession(): TerminalSession {
+  const raw = window.localStorage.getItem(TERMINAL_STORAGE_KEY);
+
+  if (!raw) {
+    return createInitialTerminalSession();
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parseTerminalSession(parsed) ?? createInitialTerminalSession();
+  } catch {
+    return createInitialTerminalSession();
+  }
+}
+
+function reviewCandidates(progress: Progress): ReviewTarget[] {
+  return LESSONS.flatMap((lesson) => {
+    const completedTaskIds = lessonStateFor(progress, lesson.id).completedTaskIds;
+
+    return lesson.terminalTasks
+      .filter((task) => completedTaskIds.includes(task.id))
+      .map((task) => ({ lesson, task, key: taskKey(lesson.id, task.id) }));
+  });
+}
+
+function pickReviewTarget(progress: Progress, now: number): ReviewTarget | undefined {
+  const candidates = reviewCandidates(progress);
+
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  const due = candidates.filter((candidate) => {
+    const record = progress.reviewRecords[candidate.key];
+    return !record || record.nextReviewAt <= now;
+  });
+  const pool = due.length > 0 ? due : candidates;
+
+  return pool[Math.floor(Math.random() * pool.length)] ?? pool[0];
+}
+
+function taskHints(task: TerminalTask): readonly [string, string, string] {
+  const guide = COMMAND_GUIDES[task.guideId];
+
+  return [
+    `Think about the action first. ${task.explanation}`,
+    `The syntax to study is ${guide.syntax}.`,
+    `Full answer: ${task.command}`,
+  ];
+}
+
+function challengeStepMatches(step: ChallengeStep, result: ReturnType<typeof runTerminalCommand>): boolean {
+  if (result.kind === "error") {
+    return false;
+  }
+
+  switch (step.check.kind) {
+    case "output-includes":
+      return result.text.includes(step.check.text);
+    case "exists":
+      return result.session.filesystem[step.check.path]?.kind === step.check.entryKind;
+    case "file-content": {
+      const entry = result.session.filesystem[step.check.path];
+      return entry?.kind === "file" && entry.content.includes(step.check.text);
+    }
+    case "mode":
+      return result.session.filesystem[step.check.path]?.mode === step.check.mode;
+    case "moved":
+      return result.session.filesystem[step.check.from] === undefined && result.session.filesystem[step.check.to]?.kind === "file";
+    default: {
+      const _exhaustive: never = step.check;
+      return _exhaustive;
+    }
   }
 }
 
@@ -1255,12 +1526,26 @@ export default function Home() {
     selectedOptionId: null,
     status: "idle",
   });
-  const [terminalSession, setTerminalSession] = useState<TerminalSession>(() => createInitialTerminalSession());
+  const [terminalSession, setTerminalSession] = useState<TerminalSession>(() => {
+    if (typeof window === "undefined") {
+      return createInitialTerminalSession();
+    }
+
+    return readTerminalSession();
+  });
   const [terminalLines, setTerminalLines] = useState<readonly TerminalDisplayLine[]>(INITIAL_TERMINAL_LINES);
   const [terminalInput, setTerminalInput] = useState("");
+  const [reviewMode, setReviewMode] = useState(false);
+  const [reviewTargetKey, setReviewTargetKey] = useState<string | null>(null);
+  const [hintLevel, setHintLevel] = useState(0);
+  const [guideQuery, setGuideQuery] = useState("");
+  const [reviewNow, setReviewNow] = useState(0);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => setHydrated(true));
+    const frame = window.requestAnimationFrame(() => {
+      setHydrated(true);
+      setReviewNow(Date.now());
+    });
 
     return () => window.cancelAnimationFrame(frame);
   }, []);
@@ -1268,8 +1553,9 @@ export default function Home() {
   useEffect(() => {
     if (hydrated) {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+      window.localStorage.setItem(TERMINAL_STORAGE_KEY, JSON.stringify(terminalSession));
     }
-  }, [hydrated, progress]);
+  }, [hydrated, progress, terminalSession]);
 
   const visibleProgress = hydrated ? progress : DEFAULT_PROGRESS;
   const activeLesson = LESSONS.find((lesson) => lesson.id === visibleProgress.activeLessonId) ?? LESSONS[0];
@@ -1279,10 +1565,22 @@ export default function Home() {
   const terminalObjectivesComplete = completedTaskCount === activeLesson.terminalTasks.length;
   const activeLessonComplete = isLessonComplete(activeLesson, visibleProgress);
   const currentTask = activeLesson.terminalTasks.find((task) => !activeLessonState.completedTaskIds.includes(task.id)) ?? activeLesson.terminalTasks[activeLesson.terminalTasks.length - 1];
+  const reviewTarget = reviewMode
+    ? reviewCandidates(visibleProgress).find((candidate) => candidate.key === reviewTargetKey)
+    : undefined;
+  const practiceTask = reviewTarget?.task ?? currentTask;
+  const practiceHints = taskHints(practiceTask);
+  const activeChallenge = activeLesson.challenge;
+  const activeChallengeState = activeChallenge ? challengeStateFor(visibleProgress, activeChallenge.id) : undefined;
+  const challengeStep = activeChallenge?.steps.find((step) => !activeChallengeState?.completedStepIds.includes(step.id));
+  const challengeComplete = Boolean(activeChallenge && activeChallengeState && activeChallengeState.completedStepIds.length === activeChallenge.steps.length);
   const nextLesson = activeLessonComplete ? LESSONS[activeIndex + 1] : undefined;
   const completedCount = LESSONS.filter((lesson) => isLessonComplete(lesson, visibleProgress)).length;
   const terminalGoalCount = LESSONS.reduce((count, lesson) => count + lesson.terminalTasks.length, 0);
   const progressPercent = Math.round((completedCount / LESSONS.length) * 100);
+  const knownReviewKeys = reviewCandidates(visibleProgress).map((candidate) => candidate.key);
+  const reviewDue = reviewNow > 0 ? dueReviewCount(visibleProgress.reviewRecords, knownReviewKeys, reviewNow) : 0;
+  const filteredGuides = Object.entries(COMMAND_GUIDES).filter(([name, guide]) => `${name} ${guide.purpose} ${guide.syntax}`.toLowerCase().includes(guideQuery.toLowerCase().trim())).slice(0, 8);
   const isExerciseForActiveLesson = exerciseState.lessonId === activeLesson.id;
   const exerciseStatus = isExerciseForActiveLesson ? exerciseState.status : "idle";
   const selectedOptionId = isExerciseForActiveLesson ? exerciseState.selectedOptionId : null;
@@ -1298,10 +1596,35 @@ export default function Home() {
 
     setProgress((current) => ({ ...current, activeLessonId: lesson.id }));
     setExerciseState({ lessonId: lesson.id, selectedOptionId: null, status: "idle" });
-    setTerminalSession(createInitialTerminalSession());
-    setTerminalLines(INITIAL_TERMINAL_LINES);
+    setTerminalSession((current) => ({
+      ...current,
+      cwd: "/home/student",
+      environment: { ...current.environment, PWD: "/home/student" },
+    }));
+    setTerminalInput("");
+    setReviewMode(false);
+    setReviewTargetKey(null);
+    document.getElementById("lesson")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function startReview() {
+    const target = pickReviewTarget(progress, Date.now());
+
+    if (!target) {
+      return;
+    }
+
+    setReviewMode(true);
+    setReviewTargetKey(target.key);
     setTerminalInput("");
     document.getElementById("lesson")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function stopReview() {
+    setReviewMode(false);
+    setReviewTargetKey(null);
+    setHintLevel(0);
+    setTerminalInput("");
   }
 
   function answerExercise(optionId: string) {
@@ -1339,6 +1662,9 @@ export default function Home() {
     setTerminalSession(createInitialTerminalSession());
     setTerminalLines(INITIAL_TERMINAL_LINES);
     setTerminalInput("");
+    setReviewMode(false);
+    setReviewTargetKey(null);
+    setHintLevel(0);
   }
 
   function submitTerminalCommand(event: FormEvent<HTMLFormElement>) {
@@ -1353,7 +1679,9 @@ export default function Home() {
     const commandLine: TerminalDisplayLine = { kind: "command", text: `${terminalSession.cwd} $ ${command}` };
     const completedTaskIds = activeLessonState.completedTaskIds;
     const nextTask = activeLesson.terminalTasks.find((task) => !completedTaskIds.includes(task.id));
-    const matchedTask = nextTask?.command === result.normalizedInput ? nextTask : undefined;
+    const matchedTask = !reviewMode && nextTask?.command === result.normalizedInput ? nextTask : undefined;
+    const matchedReviewTask = reviewTarget?.task.command === result.normalizedInput ? reviewTarget.task : undefined;
+    const matchedChallengeStep = !reviewMode && challengeStep && challengeStepMatches(challengeStep, result) ? challengeStep : undefined;
     const nextSession: TerminalSession = {
       ...result.session,
       history: [...terminalSession.history, command],
@@ -1361,9 +1689,19 @@ export default function Home() {
 
     setTerminalSession(nextSession);
     setTerminalInput("");
+    if (result.kind !== "error" && (matchedTask || matchedReviewTask || matchedChallengeStep)) {
+      setHintLevel(0);
+    }
 
-    const successLine: TerminalDisplayLine | undefined = result.kind !== "error" && matchedTask
-      ? { kind: "output", text: `✓ ${matchedTask.success}` }
+    const successMessages = result.kind !== "error"
+      ? [
+          matchedTask?.success,
+          matchedReviewTask?.success,
+          matchedChallengeStep ? `Challenge step complete. ${matchedChallengeStep.title}` : undefined,
+        ].filter((message): message is string => Boolean(message))
+      : [];
+    const successLine: TerminalDisplayLine | undefined = successMessages.length > 0
+      ? { kind: "output", text: `✓ ${successMessages.join(" ")}` }
       : undefined;
 
     if (result.kind === "clear") {
@@ -1373,14 +1711,39 @@ export default function Home() {
       setTerminalLines((current) => [...current, commandLine, ...(responseLine.text ? [responseLine] : []), ...(successLine ? [successLine] : [])]);
     }
 
-    if (matchedTask && result.kind !== "error") {
-      setProgress((current) => updateLessonState(current, activeLesson.id, (state) => ({
-        ...state,
-        completedTaskIds: state.completedTaskIds.includes(matchedTask.id)
-          ? state.completedTaskIds
-          : [...state.completedTaskIds, matchedTask.id],
-      })));
-    }
+    const attemptedKey = reviewTarget?.key ?? (nextTask ? taskKey(activeLesson.id, nextTask.id) : undefined);
+
+    setProgress((current) => {
+      let nextProgress = current;
+      const successfulCommand = result.kind !== "error";
+
+      if (matchedTask && successfulCommand) {
+        nextProgress = updateLessonState(nextProgress, activeLesson.id, (state) => ({
+          ...state,
+          completedTaskIds: state.completedTaskIds.includes(matchedTask.id)
+            ? state.completedTaskIds
+            : [...state.completedTaskIds, matchedTask.id],
+        }));
+      }
+
+      if (activeChallenge && matchedChallengeStep && successfulCommand) {
+        nextProgress = updateChallengeState(nextProgress, activeChallenge.id, (state) => ({
+          completedStepIds: state.completedStepIds.includes(matchedChallengeStep.id)
+            ? state.completedStepIds
+            : [...state.completedStepIds, matchedChallengeStep.id],
+        }));
+
+        if (activeChallengeState && activeChallengeState.completedStepIds.length + 1 === activeChallenge.steps.length) {
+          nextProgress = withAchievement(nextProgress, "mission-complete");
+        }
+      }
+
+      if (attemptedKey) {
+        nextProgress = recordPractice(nextProgress, attemptedKey, successfulCommand && Boolean(matchedTask || matchedReviewTask) ? "success" : "failure", hintLevel > 0, reviewNow);
+      }
+
+      return nextProgress;
+    });
   }
 
   return (
@@ -1442,14 +1805,14 @@ export default function Home() {
             <span className="footer-icon"><Icon name="external" size={15} /></span>
             <span><strong>Arch Wiki</strong><small>The source behind the lessons</small></span>
           </a>
-          <div className="local-note"><span className="save-dot" /> Progress saved locally</div>
+          <div className="local-note"><span className="save-dot" /> Progress saved locally · {visibleProgress.streak.current} day streak</div>
         </div>
       </aside>
 
       <section className="content-shell">
         <header className="topbar">
           <div className="breadcrumb"><span>Course</span><span>/</span><strong>Arch foundations</strong></div>
-          <div className="topbar-status"><span className="save-dot" />{hydrated ? "Saved locally" : "Loading path"}<span className="topbar-divider" />No account needed</div>
+          <div className="topbar-status"><span className="save-dot" />{hydrated ? "Saved locally" : "Loading path"}<span className="topbar-divider" />No account needed<button className="review-button" disabled={knownReviewKeys.length === 0} onClick={reviewMode ? stopReview : startReview} type="button">{reviewMode ? "Exit review" : `Review${reviewDue > 0 ? ` · ${reviewDue} due` : ""}`}</button></div>
         </header>
 
         <div className="page-content">
@@ -1488,7 +1851,13 @@ export default function Home() {
           <section aria-label="Course stats" className="stats-row">
             <div className="register-item register-primary"><span className="stat-label">Course progress</span><strong>{progressPercent}<small>%</small></strong><div className="progress-track light-track"><span style={{ transform: `scaleX(${progressPercent / 100})` }} /></div><span className="stat-foot">{completedCount} / {LESSONS.length} lessons marked</span></div>
             <div className="register-item"><span className="stat-label">Terminal goals</span><strong>{terminalGoalCount}</strong><span className="stat-foot">Every command is hands-on</span></div>
-            <div className="register-item register-note"><span className="stat-label"><Icon name="spark" size={15} /> Learner note</span><p>You do not need to memorize flags. Learn how to look them up.</p></div>
+            <div className="register-item register-note"><span className="stat-label"><Icon name="spark" size={15} /> Learning signal</span><p>{reviewDue > 0 ? `${reviewDue} command${reviewDue === 1 ? "" : "s"} due for review.` : "Your review queue is clear."} {visibleProgress.achievements.length} achievement{visibleProgress.achievements.length === 1 ? "" : "s"} unlocked.</p></div>
+          </section>
+
+          <section aria-label="Learning signals" className="learning-signal-row">
+            <div><span className="stat-label">Streak</span><strong>{visibleProgress.streak.current}<small> days</small></strong><span className="stat-foot">Best run {visibleProgress.streak.best} days</span></div>
+            <div><span className="stat-label">Achievements</span><div className="achievement-list">{ACHIEVEMENT_LABELS.map(({ id, label }) => <span className={visibleProgress.achievements.includes(id) ? "achievement is-unlocked" : "achievement"} key={id}>{visibleProgress.achievements.includes(id) ? "✓" : "○"} {label}</span>)}</div></div>
+            <div className="learning-signal-action"><span>{reviewDue > 0 ? `${reviewDue} review${reviewDue === 1 ? "" : "s"} waiting.` : "Review appears after you learn a command."}</span><button className="secondary-button" disabled={knownReviewKeys.length === 0} onClick={startReview} type="button">Start review <Icon name="arrow" size={14} /></button></div>
           </section>
 
           <section className="continue-header">
@@ -1508,12 +1877,13 @@ export default function Home() {
               <h2>{activeLesson.title}</h2>
               <p className="lesson-summary">{activeLesson.summary}</p>
 
-              <div className="command-heading"><span>Command guide</span><button aria-label="Copy first command" className="copy-button" onClick={copyActiveCommand} type="button"><Icon name={copied ? "check" : "copy"} size={15} /> {copied ? "Copied" : "Copy first"}</button></div>
+              <div className="command-heading"><span>Command guide</span><button aria-label="Copy first answer" className="copy-button" onClick={copyActiveCommand} type="button"><Icon name={copied ? "check" : "copy"} size={15} /> {copied ? "Copied" : "Copy first answer"}</button></div>
               <div className="command-guide-list">
                 {activeLesson.terminalTasks.map((task, index) => (
-                  <details className="command-guide-card" key={task.id} name="command-guide" open={index === 0}>
-                    <summary className="command-guide-summary"><span className="command-guide-index">{String(index + 1).padStart(2, "0")}</span><code>{task.command}</code><span className="command-guide-toggle" aria-hidden="true">+</span></summary>
+                  <details className="command-guide-card" key={task.id} name="command-guide">
+                    <summary className="command-guide-summary"><span className="command-guide-index">{String(index + 1).padStart(2, "0")}</span><span className="command-guide-title">{task.title}</span><span className="command-guide-toggle" aria-hidden="true">+</span></summary>
                     <div className="command-guide-content">
+                      <div className="command-guide-answer"><span>Answer</span><code>{task.command}</code></div>
                       <p>{COMMAND_GUIDES[task.guideId].purpose}</p>
                       <div className="command-guide-syntax"><span>Syntax</span><code>{COMMAND_GUIDES[task.guideId].syntax}</code></div>
                       {COMMAND_GUIDES[task.guideId].parts.length > 0 && <div className="command-guide-parts"><span>Flags and parts</span><ul>{COMMAND_GUIDES[task.guideId].parts.map((part) => <li key={`${task.id}-${part.token}`}><code>{part.token}</code><span>{part.meaning}</span></li>)}</ul></div>}
@@ -1526,12 +1896,16 @@ export default function Home() {
               <div className="terminal-practice">
                 <div className="terminal-practice-header">
                   <div>
-                    <div className="terminal-practice-label"><Icon name="terminal" size={15} /> Practice in the browser</div>
-                    <h3>{terminalObjectivesComplete ? "Terminal objectives complete" : currentTask.title}</h3>
+                    <div className="terminal-practice-label"><Icon name="terminal" size={15} /> {reviewMode ? "Review mode" : "Practice in the browser"}</div>
+                    <h3>{reviewMode ? `Review / ${practiceTask.title}` : terminalObjectivesComplete ? "Terminal objectives complete" : currentTask.title}</h3>
                   </div>
                   <span className="safe-badge"><span /> Safe mode</span>
                 </div>
-                <p className="terminal-task-prompt">{terminalObjectivesComplete ? "You completed every command objective. Take the quiz below to unlock the next lesson." : currentTask.prompt}</p>
+                <p className="terminal-task-prompt">{reviewMode ? `Recall this command without looking it up. ${practiceTask.prompt}` : terminalObjectivesComplete ? "You completed every command objective. Take the quiz below to unlock the next lesson." : currentTask.prompt}</p>
+                <div className="recall-hint">
+                  <div><span>Progressive hint {hintLevel}/3</span>{hintLevel > 0 && <p>{practiceHints[hintLevel - 1]}</p>}</div>
+                  <button disabled={hintLevel >= practiceHints.length} onClick={() => setHintLevel((level) => Math.min(level + 1, practiceHints.length))} type="button">{hintLevel === 0 ? "Show hint" : hintLevel === 1 ? "Show syntax" : hintLevel === 2 ? "Reveal answer" : "All hints shown"}</button>
+                </div>
                 <div className="terminal-objectives" aria-label="Terminal objectives">
                   <div className="terminal-objectives-heading"><span>Objectives</span><strong>{completedTaskCount}/{activeLesson.terminalTasks.length}</strong></div>
                   <ol>
@@ -1541,12 +1915,24 @@ export default function Home() {
                       return (
                         <li className={completed ? "is-complete" : index === completedTaskCount ? "is-current" : ""} key={task.id}>
                           <span className="terminal-objective-marker">{completed ? <Icon name="check" size={12} /> : index + 1}</span>
-                          <span><strong>{task.title}</strong><code>{task.command}</code></span>
+                          <span><strong>{task.title}</strong><code>{completed ? "passed" : index === completedTaskCount ? "waiting for your command" : "locked until then"}</code></span>
                         </li>
                       );
                     })}
                   </ol>
                 </div>
+                {activeChallenge && activeChallengeState && <div className="challenge-panel">
+                  <div className="challenge-header"><div><span>Mini project · multi-command challenge</span><strong>{activeChallenge.title}</strong></div><b>{activeChallengeState.completedStepIds.length}/{activeChallenge.steps.length}</b></div>
+                  <p>{activeChallenge.summary}</p>
+                  <ol>
+                    {activeChallenge.steps.map((step, index) => {
+                      const completed = activeChallengeState.completedStepIds.includes(step.id);
+
+                      return <li className={completed ? "is-complete" : index === activeChallengeState.completedStepIds.length ? "is-current" : ""} key={step.id}><span className="challenge-marker">{completed ? <Icon name="check" size={11} /> : index + 1}</span><span><strong>{step.title}</strong><small>{completed ? "done" : index === activeChallengeState.completedStepIds.length ? step.prompt : "complete the previous step first"}</small></span></li>;
+                    })}
+                  </ol>
+                  {challengeComplete && <div className="challenge-success"><Icon name="check" size={13} /> {activeChallenge.success}</div>}
+                </div>}
                 <div className="practice-terminal">
                   <div className="practice-terminal-bar"><span><i /><i /><i /></span><b>arch-practice</b><button aria-label="Reset practice terminal" onClick={resetTerminal} type="button"><Icon name="refresh" size={14} /></button></div>
                   <div className="practice-terminal-body" role="log" aria-live="polite">
@@ -1558,8 +1944,8 @@ export default function Home() {
                   </div>
                 </div>
                 <div className="terminal-task-footer">
-                  <span className={terminalObjectivesComplete ? "task-complete" : ""}>{terminalObjectivesComplete ? <><Icon name="check" size={13} /> All terminal objectives passed. Take the quiz next.</> : <><span className="task-arrow">↳</span> Objective {completedTaskCount + 1} of {activeLesson.terminalTasks.length}.</>}</span>
-                  {activeLessonComplete && nextLesson && <button className="terminal-next-button" onClick={() => openLesson(nextLesson)} type="button">Next lesson <Icon name="arrow" size={14} /></button>}
+                  <span className={terminalObjectivesComplete ? "task-complete" : ""}>{reviewMode ? <><span className="task-arrow">↳</span> Review one learned command.</> : terminalObjectivesComplete ? <><Icon name="check" size={13} /> All terminal objectives passed. Take the quiz next.</> : <><span className="task-arrow">↳</span> Objective {completedTaskCount + 1} of {activeLesson.terminalTasks.length}.</>}</span>
+                  {reviewMode ? <button className="terminal-next-button" onClick={stopReview} type="button">Exit review</button> : activeLessonComplete && nextLesson && <button className="terminal-next-button" onClick={() => openLesson(nextLesson)} type="button">Next lesson <Icon name="arrow" size={14} /></button>}
                 </div>
                 <div className="terminal-disclaimer"><Icon name="shield" size={14} /> This is a browser-only practice shell. It cannot access your computer or run arbitrary commands.</div>
               </div>
@@ -1607,6 +1993,15 @@ export default function Home() {
               <div className="reference-card"><span className="reference-icon"><Icon name="book" size={17} /></span><code>pacman -Qi name</code><p>Read package details.</p></div>
               <div className="reference-card"><span className="reference-icon"><Icon name="terminal" size={17} /></span><code>pacman -Ql name</code><p>List a package&apos;s files.</p></div>
             </div>
+          </section>
+
+          <section aria-label="Command encyclopedia" className="encyclopedia-section">
+            <div className="reference-header"><div><div className="section-label">REFERENCE / COMMANDS</div><h2>Look it up before you guess.</h2></div><span className="encyclopedia-count">{Object.keys(COMMAND_GUIDES).length} entries</span></div>
+            <label className="encyclopedia-search"><Icon name="search" size={15} /><span className="sr-only">Search the command encyclopedia</span><input onChange={(event) => setGuideQuery(event.target.value)} placeholder="Search by command, purpose, or syntax" value={guideQuery} /></label>
+            <div className="encyclopedia-grid">
+              {filteredGuides.map(([name, guide]) => <details className="encyclopedia-entry" key={name}><summary><code>{name}</code><span>{guide.purpose}</span><b>+</b></summary><div><code>{guide.syntax}</code><p>{guide.note}</p></div></details>)}
+            </div>
+            {filteredGuides.length === 0 && <p className="encyclopedia-empty">No command matches that search.</p>}
           </section>
 
           <footer className="page-footer"><span>Made for the curious.</span><span>I learn arch btw / 2026</span><a href="https://wiki.archlinux.org/" rel="noreferrer" target="_blank">Source material from Arch Wiki <Icon name="external" size={13} /></a></footer>
