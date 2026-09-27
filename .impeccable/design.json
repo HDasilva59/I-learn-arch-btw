@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-25T15:35:00+02:00",
+  "title": "Design System: I learn arch btw",
+  "extensions": {
+    "colorMeta": {
+      "black": {
+        "role": "primary",
+        "displayName": "Instrument black",
+        "canonical": "#080808",
+        "tonalRamp": ["#080808", "rgba(8, 8, 8, 0.58)", "rgba(8, 8, 8, 0.18)"]
+      },
+      "white": {
+        "role": "neutral",
+        "displayName": "Signal white",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#ffffff", "rgba(255, 255, 255, 0.58)", "rgba(255, 255, 255, 0.24)"]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "canonical": "#f4f4f1",
+        "tonalRamp": ["#f4f4f1", "#ffffff", "rgba(8, 8, 8, 0.18)"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Command display",
+        "purpose": "Large course and lesson headings with a measured, fixed-width voice."
+      },
+      "label": {
+        "displayName": "Instrument label",
+        "purpose": "Commands, state, progress, module labels, and compact metadata."
+      }
+    },
+    "shadows": [
+      {
+        "name": "terminal-offset",
+        "value": "12px 12px 0 rgba(255, 255, 255, 0.09)",
+        "purpose": "Separate the hero terminal readout from the black data field."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Short interaction transitions for navigation and controls."
+      },
+      {
+        "name": "field-scan",
+        "value": "8s steps(1, end)",
+        "purpose": "One periodic scan line in the hero data field."
+      }
+    ],
+    "breakpoints": [
+      { "name": "wide", "value": "1100px" },
+      { "name": "compact", "value": "760px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "A square black action that inverts on hover.",
+      "html": "<button class=\"primary-button\">START THE COURSE</button>",
+      "css": ".primary-button { background: #080808; color: #fff; border: 1px solid #080808; border-radius: 0; padding: 14px 15px 14px 17px; font-family: monospace; } .primary-button:hover { background: #fff; color: #080808; }"
+    },
+    {
+      "name": "Practice terminal",
+      "kind": "custom",
+      "refersTo": "terminal-surface",
+      "description": "A safe browser-only shell with explicit objectives and reset control.",
+      "html": "<section class=\"terminal-practice\"><div class=\"practice-terminal\">~ $ pwd</div></section>",
+      "css": ".terminal-practice { background: #080808; color: #fff; padding: 26px; } .practice-terminal { border: 1px solid rgba(255,255,255,.24); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The command field",
+    "overview": "The page behaves like a small black-and-white data instrument. It records position, exposes command intent, and provides a safe place to practice. Dense fixed-width readouts are balanced by quiet ruled reading space.",
+    "keyCharacteristics": [
+      "Monochrome command instrument",
+      "Hairline rules and square controls",
+      "One controlled scan line",
+      "Progress as a register, not a dashboard"
+    ],
+    "rules": [
+      { "name": "The inversion rule", "body": "Use contrast shifts to show state. Do not add a decorative accent hue.", "section": "colors" },
+      { "name": "The data voice rule", "body": "Use monospace for commands, measurement, navigation labels, and display headlines. Keep explanations in the body face.", "section": "typography" },
+      { "name": "Flat by default", "body": "Use rules and tonal surfaces for depth. Reserve the small offset for the hero terminal readout.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do make the safety boundary visible near the practice input.",
+      "Do use inversion for active, selected, and completed states."
+    ],
+    "donts": [
+      "Don't restore rounded dashboard cards or gradient decoration.",
+      "Don't let the data field replace the real command interaction."
+    ]
+  }
+}

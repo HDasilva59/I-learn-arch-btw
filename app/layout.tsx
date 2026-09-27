@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "I learn arch btw",
-  description: "A short, hands-on course for learning Arch Linux commands and pacman.",
+  description: "Learn Arch Linux commands, practice them safely, and understand pasted command lines before you run them.",
 };
 
 export const viewport: Viewport = {
