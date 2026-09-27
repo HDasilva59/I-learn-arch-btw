@@ -463,6 +463,7 @@ const COMMAND_GUIDES = {
     purpose: "Search file contents for lines that contain a pattern.",
     syntax: "grep pattern file",
     parts: [
+      { token: "-H", meaning: "Always print the filename before a matching line." },
       { token: "-n", meaning: "Print matching line numbers in a real grep command." },
       { token: "-i", meaning: "Ignore letter case in a real grep command." },
     ],
@@ -930,12 +931,13 @@ const COMMAND_GUIDES = {
     note: "split creates files with a prefix. Check the destination directory before creating many pieces.",
   },
   comm: {
-    purpose: "Compare two sorted files line by line in three columns.",
+    purpose: "Compare two sorted inputs line by line in three columns: only in the first, only in the second, and in both.",
     syntax: "comm [options] file1 file2",
     parts: [
       { token: "-1", meaning: "Hide lines found only in the first file." },
       { token: "-2", meaning: "Hide lines found only in the second file." },
       { token: "-3", meaning: "Hide lines found in both files." },
+      { token: "-23", meaning: "hides columns 2 and 3, leaving only lines unique to the first input." },
       { token: "--check-order", meaning: "Require both inputs to be sorted." },
     ],
     note: "comm expects sorted input. Use sort first when the files are not already ordered.",
@@ -3502,10 +3504,15 @@ export default function Home() {
                 <div className="command-explainer-result-header"><span className="command-explainer-status"><span /> Command understood</span><code>{commandExplanation.input}</code></div>
                 <p className="command-explainer-summary"><span className="command-explainer-summary-label">In plain English</span>{commandExplanation.plainEnglish}</p>
                 <div className="command-breakdown">
-                  <span className="command-breakdown-label">Read it left to right</span>
-                  <ol>
-                    {commandExplanation.steps.map((step, index) => <li key={`${step.token}-${index}`}><code>{step.token}</code><span>{step.explanation}</span></li>)}
-                  </ol>
+                  {commandExplanation.levels.map((level) => (
+                    <section className={`command-explanation-level is-${level.kind}`} key={level.kind}>
+                      <span className="command-breakdown-label">{level.label}</span>
+                      <p className="command-explanation-level-summary">{level.summary}</p>
+                      {level.steps.length > 0 && <ol>
+                        {level.steps.map((step, index) => <li key={`${level.kind}-${step.token}-${index}`}><code>{step.token}</code><span>{step.explanation}</span></li>)}
+                      </ol>}
+                    </section>
+                  ))}
                 </div>
                 <div className="command-explainer-footer">
                   <p><span>Guide note</span>{commandExplanation.note}</p>

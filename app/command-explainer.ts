@@ -1,16 +1,30 @@
-export type CommandGuide = {
-  purpose: string;
-  syntax: string;
-  parts: readonly {
-    token: string;
-    meaning: string;
-  }[];
-  note: string;
-};
+import {
+  commandWords,
+  parseShell,
+  type CommandNode,
+  type RedirectionOperator,
+  type WordNode,
+} from "./shell-ast";
+import {
+  identifyCommand,
+  matchCommand as matchManPageCommand,
+  resolveManPage,
+  type CommandExplanationStep,
+  type ManPage,
+  type ManPageCatalog,
+  type ResolvedCommand,
+} from "./manpage-matcher";
+import { analyzeShell, flattenAnalyses } from "./command-analyzer";
+import { parseFindExpression, type FindExpression } from "./find-expression";
 
-export type CommandExplanationStep = {
-  token: string;
-  explanation: string;
+export type CommandGuide = ManPage;
+export type { CommandExplanationStep } from "./manpage-matcher";
+
+export type CommandExplanationLevel = {
+  kind: "syntax" | "command" | "intent";
+  label: string;
+  summary: string;
+  steps: readonly CommandExplanationStep[];
 };
 
 export type CommandExplanation =
@@ -25,6 +39,7 @@ export type CommandExplanation =
       summary: string;
       plainEnglish: string;
       steps: readonly CommandExplanationStep[];
+      levels: readonly CommandExplanationLevel[];
       note: string;
       risk: {
         label: string;
@@ -38,7 +53,7 @@ export type CommandExplanation =
       plainEnglish?: string;
     };
 
-type GuideCatalog = Readonly<Record<string, CommandGuide>>;
+type GuideCatalog = ManPageCatalog;
 type GuideResolver = (tokens: readonly string[]) => string | undefined;
 
 const COMMAND_NAMES: Readonly<Record<string, string>> = {
@@ -431,21 +446,16 @@ const ARGUMENT_MEANINGS: Readonly<Record<string, string>> = {
   prlimit: "the process and resource limits to inspect or set",
 };
 
-function tokenize(input: string): readonly string[] {
-  const tokens: string[] = [];
-  let current = "";
+function normalize(input: string): string {
+  let normalized = "";
   let quote: '"' | "'" | null = null;
+  let pendingSpace = false;
 
-  for (let index = 0; index < input.length; index += 1) {
-    const character = input[index];
-
+  for (const character of input.trim()) {
     if (quote) {
-      current += character;
+      normalized += character;
 
-      if (character === "\\" && quote === '"' && input[index + 1]) {
-        current += input[index + 1];
-        index += 1;
-      } else if (character === quote) {
+      if (character === quote) {
         quote = null;
       }
 
@@ -453,38 +463,26 @@ function tokenize(input: string): readonly string[] {
     }
 
     if (character === '"' || character === "'") {
-      quote = character;
-      current += character;
-      continue;
-    }
-
-    if (character === "\\" && input[index + 1]) {
-      current += character + input[index + 1];
-      index += 1;
-      continue;
-    }
-
-    if (/\s/.test(character)) {
-      if (current) {
-        tokens.push(current);
-        current = "";
+      if (pendingSpace && normalized) {
+        normalized += " ";
       }
 
-      continue;
+      pendingSpace = false;
+      quote = character;
+      normalized += character;
+    } else if (/\s/.test(character)) {
+      pendingSpace = true;
+    } else {
+      if (pendingSpace && normalized) {
+        normalized += " ";
+      }
+
+      pendingSpace = false;
+      normalized += character;
     }
-
-    current += character;
   }
 
-  if (current) {
-    tokens.push(current);
-  }
-
-  return tokens;
-}
-
-function normalize(input: string): string {
-  return input.trim().replace(/\s+/g, " ");
+  return normalized;
 }
 
 function matchCommand(tokens: readonly string[], command: string, guideId: string | undefined): string | undefined {
@@ -661,25 +659,124 @@ function stripQuotes(token: string): string {
     : token;
 }
 
-function optionSteps(token: string, guide: CommandGuide): readonly CommandExplanationStep[] {
-  const normalizedToken = token.startsWith("-") ? token : `-${token}`;
-  const optionName = normalizedToken.split("=", 1)[0];
-  const exactMeaning = guide.parts.find((part) => part.token === token)?.meaning ?? guide.parts.find((part) => part.token === optionName)?.meaning;
-
-  if (exactMeaning) {
-    return [{ token, explanation: exactMeaning }];
+function listWithAnd(items: readonly string[]): string {
+  if (items.length <= 1) {
+    return items[0] ?? "";
   }
 
-  if (/^-[A-Za-z]{2,}$/.test(normalizedToken)) {
-    const compactOptions = [...normalizedToken.slice(1)].map((letter) => `-${letter}`);
-    const meanings = compactOptions.map((option) => guide.parts.find((part) => part.token === option));
+  if (items.length === 2) {
+    return `${items[0]} and ${items[1]}`;
+  }
 
-    if (meanings.every((part) => part !== undefined)) {
-      return meanings.map((part) => ({ token: part.token, explanation: part.meaning }));
+  return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+}
+
+type ProcessSubstitutionWord = Extract<WordNode, { kind: "process-substitution" }>;
+
+function nestedCommandWords(word: ProcessSubstitutionWord): readonly WordNode[] {
+  const firstPipeline = word.body.pipelines[0];
+  return firstPipeline?.commands[0] ? commandWords(firstPipeline.commands[0]) : [];
+}
+
+function isSimpleSortWord(word: ProcessSubstitutionWord): boolean {
+  return word.body.pipelines.length === 1
+    && word.body.pipelines[0].commands.length === 1
+    && word.body.pipelines[0].operators.length === 0
+    && nestedCommandWords(word)[0]?.raw === "sort";
+}
+
+function sortSourceFromWord(word: ProcessSubstitutionWord): string | undefined {
+  return nestedCommandWords(word)
+    .slice(1)
+    .map((part) => part.raw)
+    .findLast((part) => !part.startsWith("-"));
+}
+
+function processSubstitutionInputDescriptionFromWord(word: ProcessSubstitutionWord): string {
+  if (isSimpleSortWord(word)) {
+    const source = sortSourceFromWord(word);
+    return source ? `the sorted output of ${stripQuotes(source)}` : "the sorted output";
+  }
+
+  const hasInnerPipeline = word.body.pipelines.some((pipeline) => pipeline.commands.length > 1);
+
+  if (hasInnerPipeline) {
+    return "the output of the inner pipeline";
+  }
+
+  const command = nestedCommandWords(word)[0]?.raw;
+  return command ? `the output of ${command}` : "the output of the inner command";
+}
+
+function processSubstitutionMeaningFromWord(word: ProcessSubstitutionWord): string {
+  if (isSimpleSortWord(word)) {
+    const source = sortSourceFromWord(word);
+    return source
+      ? `sorts ${stripQuotes(source)} and exposes the result as a temporary input`
+      : "sorts its input and exposes the result as a temporary input";
+  }
+
+  const hasInnerPipeline = word.body.pipelines.some((pipeline) => pipeline.commands.length > 1);
+
+  if (hasInnerPipeline) {
+    return "runs the inner pipeline and exposes its output as a temporary input";
+  }
+
+  const command = nestedCommandWords(word)[0]?.raw;
+  const description = command ? COMMAND_NAMES[command] ?? "a shell command or program" : "an inner command";
+  return `runs ${description} and exposes its output as a temporary input`;
+}
+
+function commOptionMeaning(token: string): string | undefined {
+  if (!/^-[123]{2,3}$/.test(token)) {
+    return undefined;
+  }
+
+  const hiddenColumns = [...new Set(token.slice(1))];
+  const visibleColumns = ["1", "2", "3"].filter((column) => !hiddenColumns.includes(column));
+
+  if (visibleColumns.length === 1) {
+    const visibleMeaning = visibleColumns[0] === "1"
+      ? "lines unique to the first input"
+      : visibleColumns[0] === "2"
+        ? "lines unique to the second input"
+        : "lines common to both inputs";
+
+    return `hides columns ${hiddenColumns.join(" and ")}, leaving only ${visibleMeaning}.`;
+  }
+
+  return `hides columns ${hiddenColumns.join(" and ")}.`;
+}
+
+function redirectionMeaning(operator: RedirectionOperator): string {
+  switch (operator) {
+    case ">":
+      return "writes standard output to the target, replacing its contents";
+    case ">>":
+      return "appends standard output to the target";
+    case "<":
+      return "reads standard input from the target";
+    case "2>":
+      return "writes error output to the target, replacing its contents";
+    case "2>>":
+      return "appends error output to the target";
+    case "2>&":
+      return "duplicates the target file descriptor for error output";
+    case "&>":
+      return "writes standard output and error output to the target, replacing its contents";
+    case "&>>":
+      return "appends standard output and error output to the target";
+    case ">&":
+      return "duplicates the target file descriptor for standard output";
+    case "<<<":
+      return "passes the target string to standard input";
+    case "<&":
+      return "duplicates the target file descriptor for standard input";
+    default: {
+      const _exhaustive: never = operator;
+      return _exhaustive;
     }
   }
-
-  return [{ token, explanation: "an option passed to this command" }];
 }
 
 function riskFor(guideId: string): { label: string; message: string } {
@@ -710,121 +807,120 @@ function riskFor(guideId: string): { label: string; message: string } {
   };
 }
 
-function stepsFor(tokens: readonly string[], guideId: string, guide: CommandGuide): readonly CommandExplanationStep[] {
-  const command = tokens[0] ?? "";
-  const steps: CommandExplanationStep[] = [];
-
-  if (command === "sudo") {
-    steps.push({ token: "sudo", explanation: "asks for administrator privileges for the command that follows" });
-  }
-
-  const commandIndex = command === "sudo" ? 1 : 0;
-  const commandName = tokens[commandIndex] ?? "";
-  const commandDescription = COMMAND_NAMES[commandName] ?? "a shell command or program";
-  steps.push({ token: commandName, explanation: `runs ${commandDescription}` });
-
-  const argumentTokens = tokens.slice(commandIndex + 1);
-
-  for (let index = 0; index < argumentTokens.length; index += 1) {
-    const token = argumentTokens[index];
-    const oldTarOptions = commandName === "tar" && index === 0 && isTarOldStyleOptions(token);
-    const nextToken = argumentTokens[index + 1];
-    const pairedPart = nextToken ? guide.parts.find((part) => part.token === `${token} ${nextToken}`) : undefined;
-
-    if (pairedPart) {
-      steps.push({ token: `${token} ${nextToken}`, explanation: pairedPart.meaning });
-      index += 1;
-      continue;
-    }
-
-    if (token.startsWith("-") || token === ">" || token === ">>" || oldTarOptions) {
-      steps.push(...optionSteps(token, guide));
-      continue;
-    }
-
-    const argument = stripQuotes(token);
-    const meaning = ARGUMENT_MEANINGS[guideId] ?? "the value or path passed to the command";
-    steps.push({ token: argument, explanation: meaning });
-  }
-
-  return steps;
-}
-
 type ParsedStage = {
   input: string;
+  node: CommandNode;
+  resolved: ResolvedCommand;
   tokens: readonly string[];
   command: string;
   guideId: string | undefined;
   guide: CommandGuide | undefined;
 };
 
-function splitPipeline(input: string): readonly string[] {
-  const stages: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | null = null;
-
-  for (let index = 0; index < input.length; index += 1) {
-    const character = input[index];
-
-    if (quote) {
-      current += character;
-
-      if (character === "\\" && quote === '"' && input[index + 1]) {
-        current += input[index + 1];
-        index += 1;
-      } else if (character === quote) {
-        quote = null;
-      }
-
-      continue;
-    }
-
-    if (character === '"' || character === "'") {
-      quote = character;
-      current += character;
-      continue;
-    }
-
-    if (character === "\\" && input[index + 1]) {
-      current += character + input[index + 1];
-      index += 1;
-      continue;
-    }
-
-    if (character === "|" && input[index + 1] !== "|") {
-      stages.push(current.trim());
-      current = "";
-
-      if (input[index + 1] === "&") {
-        index += 1;
-      }
-
-      continue;
-    }
-
-    current += character;
-  }
-
-  if (current.trim()) {
-    stages.push(current.trim());
-  }
-
-  return stages;
-}
-
-function parseStage(input: string, guides: GuideCatalog): ParsedStage {
-  const rawTokens = tokenize(input);
-  const tokens = rawTokens[0] === "sudo" ? ["sudo", ...rawTokens.slice(1)] : rawTokens;
-  const commandTokens = tokens[0] === "sudo" ? tokens.slice(1) : tokens;
-  const guideId = resolveGuide(commandTokens, guides);
+function parseStage(node: CommandNode, guides: GuideCatalog): ParsedStage {
+  const words = commandWords(node).map((word) => word.raw);
+  const commandTokens = words[0] === "sudo" ? words.slice(1) : words;
+  const identification = resolveManPage(
+    identifyCommand(node),
+    guides,
+    (resolvedWords) => resolveGuide(resolvedWords, guides),
+  );
 
   return {
-    input,
-    tokens,
-    command: commandTokens[0] ?? input,
-    guideId,
-    guide: guideId ? guides[guideId] : undefined,
+    input: node.raw,
+    node,
+    resolved: identification,
+    tokens: words,
+    command: identification.name || commandTokens[0] || node.raw,
+    guideId: identification.guideId,
+    guide: identification.manPage,
   };
+}
+
+function findCommandSteps(stage: ParsedStage, guides: GuideCatalog): readonly CommandExplanationStep[] | undefined {
+  const expression = findExpressionFor(stage);
+
+  if (!expression) {
+    return undefined;
+  }
+
+  const steps: CommandExplanationStep[] = [{ token: "find", explanation: "searches a directory tree" }];
+
+  for (const root of expression.roots) {
+    steps.push({ token: stripQuotes(root.raw), explanation: "the starting path for the search" });
+  }
+
+  for (const clause of expression.clauses) {
+    if (clause.kind === "type") {
+      const type = clause.value.kind === "word" ? clause.value.raw : "entry";
+      const meaning = type === "f" ? "keeps regular files" : type === "d" ? "keeps directories" : `keeps ${type} filesystem entries`;
+      steps.push({ token: `-type ${stripQuotes(clause.value.raw)}`, explanation: meaning });
+      continue;
+    }
+
+    if (clause.kind === "name") {
+      steps.push({ token: clause.operator, explanation: clause.operator === "-iname" ? "matches the filename against a case-insensitive pattern" : "matches the filename against a pattern" });
+      steps.push({ token: stripQuotes(clause.pattern.raw), explanation: "the filename pattern to match" });
+      continue;
+    }
+
+    if (clause.kind === "exec") {
+      steps.push({ token: "-exec", explanation: "runs a nested command for each matched path" });
+      const nestedStage = parseStage(clause.command, guides);
+      const nestedGrep = grepExecDetails(clause.command);
+      const nestedSteps = stepsFor(nestedStage, guides).map((step, index) => {
+        if (index === 0) {
+          return { ...step, explanation: `runs this command for each matched path` };
+        }
+
+        if (step.token === "{}") {
+          return { ...step, explanation: "the matched path inserted into the nested command" };
+        }
+
+        if (nestedGrep && step.token === nestedGrep.pattern) {
+          return { ...step, explanation: "the text to search for in each matched file" };
+        }
+
+        return step;
+      });
+      steps.push(...nestedSteps);
+      steps.push({ token: clause.terminator === ";" ? "\\;" : "+", explanation: "ends the per-match command" });
+      continue;
+    }
+
+    steps.push({
+      token: [clause.operator, ...clause.arguments.map((argument) => stripQuotes(argument.raw))].join(" "),
+      explanation: "a find expression predicate",
+    });
+  }
+
+  for (const redirection of expression.redirections) {
+    steps.push({ token: redirection.raw, explanation: redirectionMeaning(redirection.operator) });
+  }
+
+  return steps;
+}
+
+function stepsFor(stage: ParsedStage, guides: GuideCatalog): readonly CommandExplanationStep[] {
+  if (!stage.guideId || !stage.guide) {
+    return [{ token: stage.command, explanation: `runs ${COMMAND_NAMES[stage.command] ?? "a command"}` }];
+  }
+
+  if (stage.command === "find") {
+    return findCommandSteps(stage, guides) ?? [];
+  }
+
+  return matchManPageCommand(
+    stage.resolved,
+    {
+      commandDescription: (command) => COMMAND_NAMES[command] ?? "a shell command or program",
+      argumentMeaning: ARGUMENT_MEANINGS[stage.guideId] ?? "the value or path passed to the command",
+      optionMeaning: (token) => stage.command === "comm" ? commOptionMeaning(token) : undefined,
+      redirectionMeaning,
+      processSubstitutionMeaning: (word) => processSubstitutionMeaningFromWord(word),
+      isOldStyleOption: (token, wordIndex) => stage.command === "tar" && wordIndex === 0 && isTarOldStyleOptions(token),
+    },
+  );
 }
 
 function lowerFirst(value: string): string {
@@ -833,7 +929,7 @@ function lowerFirst(value: string): string {
 }
 
 function hasShortOption(tokens: readonly string[], letter: string): boolean {
-  return tokens.some((token) => token === `-${letter}` || (/^-[A-Za-z]+$/.test(token) && token.slice(1).includes(letter)));
+  return tokens.some((token) => token === `-${letter}` || (/^-[A-Za-z0-9]+$/.test(token) && token.slice(1).includes(letter)));
 }
 
 function argumentAfter(tokens: readonly string[], option: string): string | undefined {
@@ -841,37 +937,101 @@ function argumentAfter(tokens: readonly string[], option: string): string | unde
   return optionIndex >= 0 ? tokens[optionIndex + 1] : undefined;
 }
 
-function stageAction(stage: ParsedStage, nextStage: ParsedStage | undefined): string {
-  const tokens = stage.tokens;
+type StageActionResolver = (stage: ParsedStage, nextStage: ParsedStage | undefined) => string;
 
-  if (stage.command === "find") {
-    const startPath = tokens[1] && !tokens[1].startsWith("-") ? stripQuotes(tokens[1]) : ".";
-    const location = startPath === "." ? "the current directory" : `the ${startPath} directory`;
-    const type = argumentAfter(tokens, "-type");
-    const target = type === "f" ? "regular files" : type === "d" ? "directories" : "matching paths";
-    const output = tokens.includes("-print0") ? " and outputs each match as a NUL-separated path" : "";
-    return `searches ${location} for ${target}${output}`;
+function firstPlainArgument(tokens: readonly string[]): string | undefined {
+  return tokens.slice(1).find((token) => !token.startsWith("-") && !token.startsWith("<(") && token !== "|");
+}
+
+function findExpressionFor(stage: ParsedStage): FindExpression | undefined {
+  const parsed = parseFindExpression(stage.node);
+  return parsed.kind === "parsed" ? parsed.expression : undefined;
+}
+
+function findPatternDescription(pattern: string): string {
+  const value = stripQuotes(pattern);
+
+  return value.startsWith("*.") ? `${value.slice(1)} files` : `paths matching ${value}`;
+}
+
+function findAction(stage: ParsedStage): string {
+  const expression = findExpressionFor(stage);
+
+  if (!expression) {
+    return "searches a directory tree";
   }
 
-  if (stage.command === "xargs") {
-    const targetCommandName = tokens.slice(1).find((token) => COMMAND_NAMES[token]) ?? tokens.slice(1).find((token) => !token.startsWith("-") && !/^\d+$/.test(token));
-    const targetCommand = targetCommandName ? ` for ${targetCommandName}` : nextStage?.command ? ` for ${nextStage.command}` : " into command arguments";
-    return `turns incoming items into arguments${targetCommand}`;
-  }
+  const location = pathDescription(expression.roots[0]?.raw);
+  const typeClause = expression.clauses.find((clause) => clause.kind === "type");
+  const nameClause = expression.clauses.find((clause) => clause.kind === "name");
+  const execClause = expression.clauses.find((clause) => clause.kind === "exec");
+  const type = typeClause?.kind === "type" && typeClause.value.kind === "word"
+    ? typeClause.value.raw === "f" ? "regular files" : typeClause.value.raw === "d" ? "directories" : "matching paths"
+    : "matching paths";
+  const target = nameClause?.kind === "name" && nameClause.pattern.kind === "word"
+    ? findPatternDescription(nameClause.pattern.raw)
+    : type;
+  const grepCommand = execClause?.kind === "exec" ? commandWords(execClause.command).map((word) => word.raw) : [];
+  const grepPattern = grepCommand.slice(1).find((token) => !token.startsWith("-") && token !== "{}")
+    ?? "the matching pattern";
 
-  if (stage.command === "stat") {
-    const format = tokens.find((token) => token.startsWith("--printf=")) ?? argumentAfter(tokens, "--printf");
+  return execClause?.kind === "exec" && grepCommand[0] === "grep"
+    ? `searches ${location} for ${target}, then searches each matching file for lines containing ${stripQuotes(grepPattern)}`
+    : `searches ${location} for ${target}`;
+}
 
-    if (format?.includes("%s") && format.includes("%n")) {
-      return "prints each file's size and name";
+function wcAction(tokens: readonly string[]): string {
+  const units = new Set<string>();
+  const optionTokens = tokens.filter((token) => /^-[lwmc]+$/.test(token));
+
+  for (const option of optionTokens) {
+    for (const letter of option.slice(1)) {
+      units.add(letter === "l" ? "lines" : letter === "w" ? "words" : letter === "m" ? "characters" : "bytes");
     }
-
-    return "prints file metadata";
   }
 
-  if (stage.command === "sort") {
-    const numeric = hasShortOption(tokens, "n");
-    const reverse = hasShortOption(tokens, "r");
+  const selectedUnits = [...units];
+
+  return selectedUnits.length > 0
+    ? `counts ${listWithAnd(selectedUnits)}`
+    : "counts lines, words, and bytes";
+}
+
+const STAGE_ACTION_RESOLVERS: Readonly<Record<string, StageActionResolver>> = {
+  cat: () => "prints its input",
+  cut: (stage) => hasShortOption(stage.tokens, "f") ? "selects fields from each input line" : "selects characters or bytes from each input line",
+  diff: (stage) => hasShortOption(stage.tokens, "q") ? "reports whether the inputs differ" : "shows line-by-line differences between the inputs",
+  du: (stage) => {
+    const target = firstPlainArgument(stage.tokens);
+    const location = target ? ` under ${stripQuotes(target) === "." ? "the current directory" : stripQuotes(target)}` : "under the current directory";
+    const subject = hasShortOption(stage.tokens, "a") ? "files and directories" : "directories";
+    return `estimates disk space used by ${subject}${location}`;
+  },
+  find: findAction,
+  grep: (stage) => {
+    const pattern = firstPlainArgument(stage.tokens);
+
+    return pattern ? `searches for lines matching ${stripQuotes(pattern)}` : "searches for matching lines";
+  },
+  head: (stage) => {
+    const shortCount = stage.tokens.find((token) => /^-\d+$/.test(token));
+    const longCount = stage.tokens.find((token) => token.startsWith("--lines="))?.split("=", 2)[1];
+    const optionCount = argumentAfter(stage.tokens, "-n") ?? argumentAfter(stage.tokens, "--lines");
+    const count = shortCount?.slice(1) ?? longCount ?? optionCount ?? "10";
+
+    return `keeps the first ${count} lines`;
+  },
+  join: () => "joins matching lines from two sorted inputs using a shared field",
+  paste: () => "joins corresponding lines side by side",
+  sed: () => "transforms or filters text one line at a time",
+  sort: (stage) => {
+    const numeric = hasShortOption(stage.tokens, "n");
+    const reverse = hasShortOption(stage.tokens, "r");
+    const humanReadable = hasShortOption(stage.tokens, "h");
+
+    if (humanReadable && reverse) {
+      return "sorts human-readable sizes from largest to smallest";
+    }
 
     if (numeric && reverse) {
       return "sorts the results numerically from largest to smallest";
@@ -884,72 +1044,420 @@ function stageAction(stage: ParsedStage, nextStage: ParsedStage | undefined): st
     if (reverse) {
       return "sorts the results in reverse order";
     }
-  }
 
-  if (stage.command === "head") {
-    const shortCount = tokens.find((token) => /^-\d+$/.test(token));
-    const longCount = tokens.find((token) => token.startsWith("--lines="))?.split("=", 2)[1];
-    const optionCount = argumentAfter(tokens, "-n") ?? argumentAfter(tokens, "--lines");
+    return "sorts the results";
+  },
+  stat: (stage) => {
+    const format = stage.tokens.find((token) => token.startsWith("--printf=")) ?? argumentAfter(stage.tokens, "--printf");
+
+    return format?.includes("%s") && format.includes("%n") ? "prints each file's size and name" : "prints file metadata";
+  },
+  tac: () => "prints input lines in reverse order",
+  tail: (stage) => {
+    const shortCount = stage.tokens.find((token) => /^-\d+$/.test(token));
+    const longCount = stage.tokens.find((token) => token.startsWith("--lines="))?.split("=", 2)[1];
+    const optionCount = argumentAfter(stage.tokens, "-n") ?? argumentAfter(stage.tokens, "--lines");
     const count = shortCount?.slice(1) ?? longCount ?? optionCount ?? "10";
-    return `keeps the first ${count} lines`;
-  }
 
-  if (stage.guide) {
-    return lowerFirst(stage.guide.purpose);
-  }
+    return `keeps the last ${count} lines`;
+  },
+  tee: (stage) => hasShortOption(stage.tokens, "a") ? "copies input to the terminal and appends it to files" : "copies input to the terminal and files",
+  tr: (stage) => hasShortOption(stage.tokens, "d") ? "deletes selected characters" : hasShortOption(stage.tokens, "s") ? "squeezes repeated characters" : "translates characters",
+  uniq: (stage) => hasShortOption(stage.tokens, "c") ? "counts adjacent repeated lines" : hasShortOption(stage.tokens, "d") ? "prints only repeated lines" : hasShortOption(stage.tokens, "u") ? "prints only unique lines" : "filters adjacent repeated lines",
+  wc: (stage) => wcAction(stage.tokens),
+  xargs: (stage, nextStage) => {
+    const targetCommandName = stage.tokens.slice(1).find((token) => COMMAND_NAMES[token]) ?? stage.tokens.slice(1).find((token) => !token.startsWith("-") && !/^\d+$/.test(token));
+    const targetCommand = targetCommandName ? ` for ${targetCommandName}` : nextStage?.command ? ` for ${nextStage.command}` : " into command arguments";
 
-  return `runs ${COMMAND_NAMES[stage.command] ?? "a command"}`;
+    return `turns incoming items into arguments${targetCommand}`;
+  },
+};
+
+function stageAction(stage: ParsedStage, nextStage: ParsedStage | undefined): string {
+  const resolvedAction = STAGE_ACTION_RESOLVERS[stage.command]?.(stage, nextStage);
+  const action = resolvedAction ?? (stage.guide ? lowerFirst(stage.guide.purpose) : `runs ${COMMAND_NAMES[stage.command] ?? "a command"}`);
+  const processInputs = stage.node.parts
+    .flatMap((part) => part.kind === "redirection" ? [part.target] : [part])
+    .filter((word): word is ProcessSubstitutionWord => word.kind === "process-substitution")
+    .map(processSubstitutionInputDescriptionFromWord);
+
+  return processInputs.length > 0 ? `${action} using ${listWithAnd(processInputs)}` : action;
 }
 
-function pipelineSentence(stages: readonly ParsedStage[]): string {
-  const actions = stages.map((stage, index) => stageAction(stage, stages[index + 1]));
+type PipelineIntentResolver = (
+  stages: readonly ParsedStage[],
+  separators: readonly string[],
+) => string | undefined;
 
-  if (actions.length === 1) {
-    return `${actions[0].charAt(0).toUpperCase()}${actions[0].slice(1)}.`;
+function pathDescription(token: string | undefined): string {
+  if (!token || stripQuotes(token) === ".") {
+    return "the current directory";
   }
 
-  if (actions.length === 2) {
-    return `It ${actions[0]}, then ${actions[1]}.`;
-  }
-
-  const finalAction = actions[actions.length - 1];
-  const middleActions = actions.slice(1, -1).map((action) => `then ${action}`);
-
-  return `It ${actions[0]}, ${[...middleActions, `and finally ${finalAction}`].join(", ")}.`;
+  return stripQuotes(token);
 }
 
-function pipelineSteps(stages: readonly ParsedStage[]): readonly CommandExplanationStep[] {
+function headCount(stage: ParsedStage): string {
+  const shortCount = stage.tokens.find((token) => /^-\d+$/.test(token));
+  const longCount = stage.tokens.find((token) => token.startsWith("--lines="))?.split("=", 2)[1];
+  return shortCount?.slice(1) ?? longCount ?? argumentAfter(stage.tokens, "-n") ?? argumentAfter(stage.tokens, "--lines") ?? "10";
+}
+
+function grepExecDetails(command: CommandNode): { pattern: string; qualifiers: readonly string[] } | undefined {
+  const tokens = commandWords(command).map((word) => word.raw);
+
+  if (tokens[0] !== "grep") {
+    return undefined;
+  }
+
+  const pattern = tokens.slice(1).find((token) => !token.startsWith("-") && token !== "{}");
+
+  if (!pattern) {
+    return undefined;
+  }
+
+  const qualifiers = [
+    ...(hasShortOption(tokens, "i") ? ["case-insensitively"] : []),
+    ...(hasShortOption(tokens, "H") ? ["with filenames"] : []),
+    ...(hasShortOption(tokens, "n") ? ["with line numbers"] : []),
+  ];
+
+  return { pattern: stripQuotes(pattern), qualifiers };
+}
+
+const PIPELINE_INTENT_RESOLVERS: readonly PipelineIntentResolver[] = [
+  (stages, separators) => {
+    if (separators.some((separator) => separator !== "|") || stages.length !== 2) {
+      return undefined;
+    }
+
+    const [findStage, headStage] = stages;
+
+    if (findStage.command !== "find" || headStage.command !== "head") {
+      return undefined;
+    }
+
+    const expression = findExpressionFor(findStage);
+    const execClause = expression?.clauses.find((clause) => clause.kind === "exec");
+    const details = execClause?.kind === "exec" ? grepExecDetails(execClause.command) : undefined;
+
+    if (!expression || !execClause || execClause.kind !== "exec" || !details) {
+      return undefined;
+    }
+
+    const root = pathDescription(expression.roots[0]?.raw);
+    const nameClause = expression.clauses.find((clause) => clause.kind === "name");
+    const typeClause = expression.clauses.find((clause) => clause.kind === "type");
+    const type = typeClause?.kind === "type" && typeClause.value.kind === "word"
+      ? typeClause.value.raw === "f" ? "regular files" : typeClause.value.raw === "d" ? "directories" : "matching paths"
+      : "matching paths";
+    const target = nameClause?.kind === "name" && nameClause.pattern.kind === "word"
+      ? findPatternDescription(nameClause.pattern.raw)
+      : type;
+    const qualifiers = details.qualifiers.length > 0 ? ` (${listWithAnd(details.qualifiers)})` : "";
+    const hidesErrors = expression.redirections.some((redirection) =>
+      redirection.operator === "2>" && stripQuotes(redirection.target.raw) === "/dev/null",
+    );
+    const actions = [
+      `find lines containing "${details.pattern}" inside them${qualifiers}`,
+      ...(hidesErrors ? ["hide permission/error messages"] : []),
+      `show only the first ${headCount(headStage)} matches`,
+    ];
+
+    return `Search ${root} for ${target}, ${actions.join(", ")}.`;
+  },
+  (stages, separators) => {
+    if (separators.some((separator) => separator !== "|") || stages.length !== 3) {
+      return undefined;
+    }
+
+    const [duStage, sortStage, headStage] = stages;
+
+    if (duStage.command !== "du" || sortStage.command !== "sort" || headStage.command !== "head") {
+      return undefined;
+    }
+
+    const reverse = hasShortOption(sortStage.tokens, "r");
+    const humanReadable = hasShortOption(sortStage.tokens, "h");
+
+    if (!reverse || !humanReadable) {
+      return undefined;
+    }
+
+    const count = headCount(headStage);
+    const subject = hasShortOption(duStage.tokens, "a") ? "files and directories" : "directories";
+    const location = pathDescription(firstPlainArgument(duStage.tokens));
+
+    return `Find the ${count} largest ${subject} under ${location}.`;
+  },
+  (stages, separators) => {
+    if (separators.some((separator) => separator !== "|") || stages.length !== 2) {
+      return undefined;
+    }
+
+    const [sortStage, headStage] = stages;
+
+    if (sortStage.command !== "sort" || headStage.command !== "head" || !hasShortOption(sortStage.tokens, "r")) {
+      return undefined;
+    }
+
+    return `Keep the first ${headCount(headStage)} entries after sorting them from largest to smallest.`;
+  },
+  (stages, separators) => {
+    if (separators.some((separator) => separator !== "|") || stages.length !== 2) {
+      return undefined;
+    }
+
+    const [grepStage, wcStage] = stages;
+
+    return grepStage.command === "grep" && wcStage.command === "wc" && hasShortOption(wcStage.tokens, "l")
+      ? "Count the lines that match the search pattern."
+      : undefined;
+  },
+];
+
+function pipelineIntent(stages: readonly ParsedStage[], separators: readonly string[]): string | undefined {
+  return PIPELINE_INTENT_RESOLVERS
+    .map((resolver) => resolver(stages, separators))
+    .find((intent): intent is string => Boolean(intent));
+}
+
+function syntaxSteps(stages: readonly ParsedStage[], separators: readonly string[]): readonly CommandExplanationStep[] {
   return stages.flatMap((stage, index) => [
-    ...(index > 0 ? [{ token: "|", explanation: `passes the previous stage's output into ${stage.command}` }] : []),
-    ...(stage.guideId && stage.guide ? stepsFor(stage.tokens, stage.guideId, stage.guide) : [{ token: stage.command, explanation: `runs ${COMMAND_NAMES[stage.command] ?? "a command"}` }]),
+    ...(index > 0 ? [{
+      token: separators[index - 1] ?? "|",
+      explanation: separatorMeaning(separators[index - 1] ?? "|", stage.command),
+    }] : []),
+    ...stage.node.parts.flatMap((part) => {
+      if (part.kind === "redirection") {
+        return [{
+          token: part.raw,
+          explanation: redirectionMeaning(part.operator),
+        }];
+      }
+
+      return part.kind === "process-substitution"
+        ? [{ token: part.raw, explanation: processSubstitutionMeaningFromWord(part) }]
+        : [];
+    }),
   ]);
 }
 
-function riskForPipeline(stages: readonly ParsedStage[]): { label: string; message: string } {
-  const guideIds = stages.flatMap((stage) => (stage.guideId ? [stage.guideId] : []));
+function commandLevelSteps(
+  stages: readonly ParsedStage[],
+  separators: readonly string[],
+  syntax: readonly CommandExplanationStep[],
+  guides: GuideCatalog,
+): readonly CommandExplanationStep[] {
+  const syntaxTokens = new Set(syntax.map((step) => step.token));
+  return pipelineSteps(stages, separators, guides).filter((step) =>
+    !syntaxTokens.has(step.token) && !/^(?:\d+)?(?:>|<)|^&>/.test(step.token),
+  );
+}
+
+function explanationLevels(
+  stages: readonly ParsedStage[],
+  separators: readonly string[],
+  plainEnglish: string,
+  guides: GuideCatalog,
+): readonly CommandExplanationLevel[] {
+  const syntax = syntaxSteps(stages, separators);
+
+  return [
+    {
+      kind: "syntax",
+      label: "Syntax",
+      summary: syntax.length > 0 ? "How the shell connects, redirects, and supplies data." : "No shell-level operators or redirections were found.",
+      steps: syntax,
+    },
+    {
+      kind: "command",
+      label: "Command",
+      summary: "What each command and option contributes.",
+      steps: commandLevelSteps(stages, separators, syntax, guides),
+    },
+    {
+      kind: "intent",
+      label: "Intent",
+      summary: plainEnglish,
+      steps: [],
+    },
+  ];
+}
+
+function pipelineSentence(stages: readonly ParsedStage[], separators: readonly string[]): string {
+  const actions = stages.map((stage, index) => stageAction(stage, stages[index + 1]));
+
+  if (actions.length === 1) {
+    return sentenceFromAction(actions[0]);
+  }
+
+  const clauses = actions.slice(1).map((action, index) => {
+    const separator = separators[index] ?? "|";
+
+    switch (separator) {
+      case "&&":
+        return `only if that succeeds, it ${action}`;
+      case "||":
+        return `if that fails, it ${action}`;
+      case ";":
+        return `then it ${action}`;
+      default:
+        return `then it ${action}`;
+    }
+  });
+
+  return `It ${actions[0]}, ${clauses.join(", ")}.`;
+}
+
+function sentenceFromAction(action: string): string {
+  return `${action.charAt(0).toUpperCase()}${action.slice(1)}.`;
+}
+
+function pipelineSteps(stages: readonly ParsedStage[], separators: readonly string[], guides: GuideCatalog): readonly CommandExplanationStep[] {
+  return stages.flatMap((stage, index) => [
+    ...(index > 0 ? [{
+      token: separators[index - 1] ?? "|",
+      explanation: separatorMeaning(separators[index - 1] ?? "|", stage.command),
+    }] : []),
+    ...stepsFor(stage, guides),
+  ]);
+}
+
+function commandExpression(stages: readonly ParsedStage[], separators: readonly string[]): string {
+  return stages.reduce((expression, stage, index) => {
+    if (index === 0) {
+      return stage.command;
+    }
+
+    return `${expression} ${separators[index - 1] ?? "|"} ${stage.command}`;
+  }, "");
+}
+
+function shellOperatorNote(separators: readonly string[]): string {
+  const hasPipe = separators.some((separator) => separator === "|" || separator === "|&");
+  const hasConditional = separators.some((separator) => separator === "&&" || separator === "||" || separator === ";");
+
+  if (hasPipe && hasConditional) {
+    return "The shell combines pipes and conditional operators to control how output and exit status flow between stages.";
+  }
+
+  if (hasConditional) {
+    return "The shell operators control whether the next command runs based on the previous command's exit status.";
+  }
+
+  return "The pipe passes each stage's standard output into the next command.";
+}
+
+function separatorMeaning(separator: string, nextCommand: string): string {
+  switch (separator) {
+    case "|":
+      return `passes the previous stage's standard output into ${nextCommand}`;
+    case "|&":
+      return `passes the previous stage's output and errors into ${nextCommand}`;
+    case "&&":
+      return `runs ${nextCommand} only if the previous command succeeds`;
+    case "||":
+      return `runs ${nextCommand} only if the previous command fails`;
+    case ";":
+      return `runs ${nextCommand} after the previous command`;
+    default:
+      return `connects the previous command to ${nextCommand}`;
+  }
+}
+
+function commInputWords(stage: ParsedStage): readonly WordNode[] {
+  const words = commandWords(stage.node);
+  const commandIndex = words[0]?.raw === "sudo" ? 2 : 1;
+
+  return words.slice(commandIndex).filter((word) => !word.raw.startsWith("-"));
+}
+
+function commInputLabel(word: WordNode, index: number): string {
+  if (word.kind === "process-substitution") {
+    const source = sortSourceFromWord(word);
+
+    return source ? stripQuotes(source) : `input ${index + 1}`;
+  }
+
+  return stripQuotes(word.raw);
+}
+
+function commPlainEnglish(stage: ParsedStage): string {
+  const inputWords = commInputWords(stage).slice(0, 2);
+  const inputs = inputWords.map(commInputLabel);
+  const firstInput = inputs[0] ?? "the first input";
+  const secondInput = inputs[1] ?? "the second input";
+  const sortedProcessSubstitutions = inputWords.length === 2
+    && inputWords.every((word): word is ProcessSubstitutionWord => word.kind === "process-substitution" && isSimpleSortWord(word));
+  const sortedSuffix = sortedProcessSubstitutions ? ", sorting both files first" : "";
+
+  if (hasShortOption(stage.tokens, "2") && hasShortOption(stage.tokens, "3") && !hasShortOption(stage.tokens, "1")) {
+    return `Print lines that exist in ${firstInput} but not in ${secondInput}${sortedSuffix}.`;
+  }
+
+  if (hasShortOption(stage.tokens, "1") && hasShortOption(stage.tokens, "3") && !hasShortOption(stage.tokens, "2")) {
+    return `Print lines that exist in ${secondInput} but not in ${firstInput}${sortedSuffix}.`;
+  }
+
+  if (hasShortOption(stage.tokens, "1") && hasShortOption(stage.tokens, "2") && !hasShortOption(stage.tokens, "3")) {
+    return `Print lines common to ${firstInput} and ${secondInput}${sortedSuffix}.`;
+  }
+
+  return inputWords.length === 2
+    ? `Compare ${firstInput} and ${secondInput} line by line in three columns${sortedSuffix}.`
+    : "Compare two sorted inputs line by line in three columns.";
+}
+
+function commNote(stage: ParsedStage, fallback: string): string {
+  const inputs = commInputWords(stage).slice(0, 2);
+  const sortedProcessSubstitutions = inputs.length === 2
+    && inputs.every((word): word is ProcessSubstitutionWord => word.kind === "process-substitution" && isSimpleSortWord(word));
+
+  return sortedProcessSubstitutions
+    ? "comm requires sorted input. Here, process substitution (<(...)) sorts both files without creating intermediate files."
+    : fallback;
+}
+
+function riskForGuideIds(guideIds: readonly string[], composed: boolean): { label: string; message: string } {
 
   if (guideIds.some((guideId) => DANGEROUS_GUIDES.has(guideId))) {
     return {
       label: "Check before running",
-      message: "At least one stage can stop a process, overwrite files, delete data, or change the system. Check the whole pipeline first.",
+      message: composed
+        ? "At least one stage or nested command can stop a process, overwrite files, delete data, or change the system. Check the whole command first."
+        : "This command or a nested command can stop a process, overwrite files, delete data, or change the system. Check every target first.",
     };
   }
 
   if (guideIds.some((guideId) => EXTERNAL_GUIDES.has(guideId))) {
     return {
       label: "Can execute generated input",
-      message: "At least one stage can run a command or contact another system using generated input. Check every stage and the data flowing between them.",
+      message: composed
+        ? "At least one stage or nested command can run generated input or contact another system. Check every stage and the data flowing between them."
+        : "This command or a nested command can run generated input or contact another system. Check the destination and input first.",
     };
   }
 
   if (guideIds.some((guideId) => MUTATING_GUIDES.has(guideId))) {
     return {
       label: "Changes system state",
-      message: "At least one stage can change files or system state. Check the destination and generated arguments before confirming.",
+      message: composed
+        ? "At least one stage or nested command can change files or system state. Check every destination and generated argument before confirming."
+        : "This command or a nested command can change files or system state. Check the destination and generated arguments before confirming.",
     };
   }
 
   return riskFor(guideIds[0] ?? "");
+}
+
+function riskForPipeline(stages: readonly ParsedStage[], nestedCommands: readonly ResolvedCommand[]): { label: string; message: string } {
+  const guideIds = [
+    ...stages.flatMap((stage) => (stage.guideId ? [stage.guideId] : [])),
+    ...nestedCommands.flatMap((command) => (command.guideId ? [command.guideId] : [])),
+  ];
+
+  return riskForGuideIds(guideIds, stages.length > 1 || nestedCommands.length > 0);
 }
 
 export function explainCommand(input: string, guides: GuideCatalog): CommandExplanation {
@@ -959,16 +1467,44 @@ export function explainCommand(input: string, guides: GuideCatalog): CommandExpl
     return { kind: "empty", input: "" };
   }
 
-  const stages = splitPipeline(normalizedInput).map((stage) => parseStage(stage, guides));
-  const firstStage = stages[0];
-  const unknownStage = stages.find((stage) => !stage.guideId || !stage.guide);
+  const parsedShell = parseShell(input.trim());
 
-  if (unknownStage) {
+  if (parsedShell.kind === "error") {
     return {
       kind: "unknown",
       input: normalizedInput,
-      command: unknownStage.command,
-      ...(stages.length > 1 ? { plainEnglish: `This pipeline passes output through ${stages.map((stage) => stage.command).join(" → ")}, but I do not have a reliable guide for ${unknownStage.command} yet.` } : {}),
+      command: normalizedInput.split(/\s+/, 1)[0] ?? normalizedInput,
+      plainEnglish: parsedShell.message,
+    };
+  }
+
+  const stageGroups = parsedShell.ast.pipelines.map((pipeline) => pipeline.commands.map((command) => parseStage(command, guides)));
+  const stages = stageGroups.flat();
+  const separators = parsedShell.ast.pipelines.flatMap((pipeline, pipelineIndex) => [
+    ...pipeline.operators,
+    ...(pipelineIndex < parsedShell.ast.operators.length ? [parsedShell.ast.operators[pipelineIndex]] : []),
+  ]);
+  const firstStage = stages[0];
+  const unknownStage = stages.find((stage) => !stage.guideId || !stage.guide);
+
+  if (!firstStage) {
+    return { kind: "unknown", input: normalizedInput, command: normalizedInput };
+  }
+
+  const analyses = analyzeShell(parsedShell.ast, {
+    catalog: guides,
+    resolveGuide: (resolvedWords) => resolveGuide(resolvedWords, guides),
+  });
+  const identifiedCommands = flattenAnalyses(analyses).map((analysis) => analysis.resolved);
+  const unknownNestedCommand = identifiedCommands.find((identified) => !identified.guideId || !identified.manPage);
+
+  if (unknownStage || unknownNestedCommand) {
+    const unknownCommand = unknownStage?.command ?? unknownNestedCommand?.name ?? firstStage.command;
+    return {
+      kind: "unknown",
+      input: normalizedInput,
+      command: unknownCommand,
+      ...(stages.length > 1 || unknownNestedCommand ? { plainEnglish: `This command connects ${stages.map((stage) => stage.command).join(" → ")}, but I do not have a reliable guide for ${unknownCommand} yet.` } : {}),
     };
   }
 
@@ -980,15 +1516,44 @@ export function explainCommand(input: string, guides: GuideCatalog): CommandExpl
   }
 
   const isPipeline = stages.length > 1;
+  const intent = isPipeline ? pipelineIntent(stages, separators) : undefined;
+  const hasProcessSubstitution = firstStage.node.parts.some((part) =>
+    (part.kind === "process-substitution") || (part.kind === "redirection" && part.target.kind === "process-substitution"),
+  );
+  const plainEnglish = intent
+    ?? (firstStage.command === "comm" && !isPipeline
+    ? commPlainEnglish(firstStage)
+    : isPipeline
+      ? pipelineSentence(stages, separators)
+      : hasProcessSubstitution
+        ? sentenceFromAction(stageAction(firstStage, undefined))
+      : guide.purpose);
+  const baseNote = isPipeline
+    ? `${shellOperatorNote(separators)} ${guide.note}`
+    : firstStage.command === "comm"
+      ? commNote(firstStage, guide.note)
+      : guide.note;
+  const hasProcessSubstitutionInPipeline = stages.some((stage) => stage.node.parts.some((part) =>
+    (part.kind === "process-substitution") || (part.kind === "redirection" && part.target.kind === "process-substitution"),
+  ));
+  const note = !isPipeline && firstStage.command === "comm"
+    ? baseNote
+    : hasProcessSubstitutionInPipeline
+      ? `${baseNote} Process substitution (<(...)) runs each inner command and exposes its output as an input without creating named intermediate files.`
+      : baseNote;
 
   return {
     kind: "recognized",
     input: normalizedInput,
-    command: stages.map((stage) => stage.command).join(" | "),
+    command: commandExpression(stages, separators),
     summary: guide.purpose,
-    plainEnglish: isPipeline ? pipelineSentence(stages) : guide.purpose,
-    steps: isPipeline ? pipelineSteps(stages) : stepsFor(firstStage.tokens, guideId, guide),
-    note: isPipeline ? `The pipe passes each stage's standard output into the next command. ${guide.note}` : guide.note,
-    risk: isPipeline ? riskForPipeline(stages) : riskFor(guideId),
+    plainEnglish,
+    steps: isPipeline ? pipelineSteps(stages, separators, guides) : stepsFor(firstStage, guides),
+    levels: explanationLevels(stages, separators, plainEnglish, guides),
+    note,
+    risk: isPipeline ? riskForPipeline(stages, identifiedCommands) : riskForGuideIds(
+      identifiedCommands.flatMap((command) => (command.guideId ? [command.guideId] : [])),
+      identifiedCommands.length > 1,
+    ),
   };
 }
