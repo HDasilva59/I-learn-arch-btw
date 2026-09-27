@@ -1,8 +1,10 @@
 import {
   commandWords,
   parseShell,
+  shellSubstitutions,
   type CommandNode,
   type RedirectionOperator,
+  type ShellSubstitution,
   type WordNode,
 } from "./shell-ast";
 import {
@@ -14,7 +16,17 @@ import {
   type ManPageCatalog,
   type ResolvedCommand,
 } from "./manpage-matcher";
-import { analyzeShell, flattenAnalyses } from "./command-analyzer";
+import { analyzeShell, flattenAnalyses, type CommandAnalysis } from "./command-analyzer";
+import type { CommandOrigin } from "./command-analyzer";
+import { effectLabel, foundationsForCommand, type CommandEffect, type LinuxFoundation } from "./command-knowledge";
+import {
+  ARGUMENT_MEANINGS,
+  COMMAND_NAMES,
+  DANGEROUS_GUIDES,
+  DIRECT_GUIDES,
+  EXTERNAL_GUIDES,
+  MUTATING_GUIDES,
+} from "./commands/metadata";
 import { parseFindExpression, type FindExpression } from "./find-expression";
 
 export type CommandGuide = ManPage;
@@ -25,6 +37,27 @@ export type CommandExplanationLevel = {
   label: string;
   summary: string;
   steps: readonly CommandExplanationStep[];
+};
+
+export type CommandDiagnostic =
+  | {
+      kind: "unknown-command";
+      command: string;
+      origin: CommandOrigin;
+      message: string;
+    }
+  | {
+      kind: "syntax-error";
+      command: string;
+      origin: "top-level";
+      message: string;
+    };
+
+export type KnownCommandSummary = {
+  command: string;
+  purpose: string;
+  origin: CommandOrigin;
+  effects: readonly CommandEffect[];
 };
 
 export type CommandExplanation =
@@ -40,6 +73,10 @@ export type CommandExplanation =
       plainEnglish: string;
       steps: readonly CommandExplanationStep[];
       levels: readonly CommandExplanationLevel[];
+      coverage: "complete" | "partial";
+      diagnostics: readonly CommandDiagnostic[];
+      effects: readonly CommandEffect[];
+      foundations: readonly LinuxFoundation[];
       note: string;
       risk: {
         label: string;
@@ -51,180 +88,14 @@ export type CommandExplanation =
       input: string;
       command: string;
       plainEnglish?: string;
+      diagnostics: readonly CommandDiagnostic[];
+      knownCommands: readonly KnownCommandSummary[];
+      effects: readonly CommandEffect[];
     };
 
 type GuideCatalog = ManPageCatalog;
 type GuideResolver = (tokens: readonly string[]) => string | undefined;
 
-const COMMAND_NAMES: Readonly<Record<string, string>> = {
-  alias: "a shell shortcut manager",
-  awk: "a text-processing language",
-  base64: "a Base64 encoder and decoder",
-  basename: "a filename extractor",
-  blkid: "a block-device attribute viewer",
-  cat: "a file reader",
-  cd: "the shell's directory changer",
-  chmod: "a permission mode changer",
-  chown: "an ownership changer",
-  chgrp: "a group ownership changer",
-  chrt: "a real-time scheduling policy tool",
-  clear: "the terminal display clearer",
-  comm: "a sorted-file comparer",
-  command: "the shell command resolver",
-  cp: "a file copier",
-  curl: "a network transfer client",
-  cut: "a column selector",
-  date: "a date and time formatter",
-  dd: "a raw data copier",
-  df: "a filesystem space reporter",
-  diff: "a file difference reporter",
-  dirname: "a directory-name extractor",
-  dmesg: "a kernel message viewer",
-  depmod: "a kernel module dependency builder",
-  du: "a directory space estimator",
-  echo: "a text printer and file writer",
-  env: "an environment viewer",
-  export: "an environment variable exporter",
-  exec: "a shell process replacer",
-  file: "a file type detector",
-  fdisk: "a partition-table editor",
-  free: "a memory usage reporter",
-  find: "a filesystem searcher",
-  findfs: "a filesystem identifier resolver",
-  findmnt: "a mounted-filesystem viewer",
-  fstrim: "a filesystem discard tool",
-  fsck: "a filesystem checker and repair tool",
-  getconf: "a system-configuration viewer",
-  getent: "a name-service database viewer",
-  groups: "a group membership viewer",
-  gzip: "a file compressor",
-  grep: "a text searcher",
-  head: "a file previewer",
-  help: "the Bash builtin help viewer",
-  history: "the shell history viewer",
-  hostname: "a system name viewer",
-  id: "a user and group identity viewer",
-  install: "a file installer",
-  ip: "the Linux network configuration tool",
-  insmod: "a single kernel module loader",
-  ionice: "an I/O scheduling policy tool",
-  jobs: "the shell job viewer",
-  join: "a sorted-file joiner",
-  journalctl: "the system journal viewer",
-  kill: "a process signal sender",
-  last: "a login history viewer",
-  less: "a paged file reader",
-  ln: "a link creator",
-  ls: "a directory lister",
-  lsblk: "a block device lister",
-  lscpu: "a CPU information viewer",
-  lsmod: "a loaded-kernel-module viewer",
-  lsns: "a Linux namespace viewer",
-  logger: "a system-log message writer",
-  man: "the local manual viewer",
-  md5sum: "an MD5 checksum tool",
-  mkdir: "a directory creator",
-  mktemp: "a temporary file creator",
-  modinfo: "a kernel module metadata viewer",
-  modprobe: "a kernel module loader",
-  mount: "a filesystem mounter",
-  mv: "a file mover and renamer",
-  nice: "a process priority wrapper",
-  nl: "a line numberer",
-  nohup: "a hangup-resistant command wrapper",
-  nsenter: "a namespace entry tool",
-  od: "a byte representation viewer",
-  passwd: "a password manager",
-  paste: "a column joiner",
-  pacman: "the Arch Linux package manager",
-  pgrep: "a process finder",
-  pkill: "a process signal matcher",
-  popd: "a directory stack popper",
-  printenv: "an environment variable viewer",
-  printf: "a formatted text printer",
-  ps: "a process list viewer",
-  pwd: "the current directory viewer",
-  pushd: "a directory stack pusher",
-  read: "a shell input reader",
-  readlink: "a symbolic link reader",
-  realpath: "a canonical path resolver",
-  rm: "a file remover",
-  rmdir: "an empty directory remover",
-  renice: "a process priority changer",
-  rsync: "a file synchronization tool",
-  rmmod: "a kernel module remover",
-  scp: "an SSH file copier",
-  sed: "a stream text editor",
-  seq: "a number sequence generator",
-  sha256sum: "a SHA-256 checksum tool",
-  shred: "a file overwrite tool",
-  shuf: "a random line selector",
-  sleep: "a delay command",
-  split: "a file splitter",
-  ss: "a socket viewer",
-  sort: "a line sorter",
-  source: "a shell file loader",
-  stat: "a file metadata viewer",
-  stty: "a terminal setting manager",
-  su: "a user switcher",
-  swapoff: "a swap deactivator",
-  swapon: "a swap activator",
-  sysctl: "a kernel runtime-parameter viewer",
-  systemctl: "the systemd service manager",
-  taskset: "a process CPU-affinity tool",
-  tail: "a file ending previewer",
-  tar: "an archive manager",
-  tac: "a reverse line printer",
-  tee: "a pipeline output splitter",
-  test: "a shell condition tester",
-  top: "a live process viewer",
-  touch: "a file creator",
-  tr: "a character translator",
-  truncate: "a file size changer",
-  type: "the shell command resolver",
-  umask: "a new-file permission mask manager",
-  umount: "a filesystem unmount tool",
-  unshare: "a namespace creation tool",
-  udevadm: "the Linux device-manager control tool",
-  unalias: "a shell alias remover",
-  uniq: "an adjacent duplicate filter",
-  uname: "a system identity viewer",
-  unset: "a shell variable remover",
-  uptime: "a system uptime viewer",
-  wget: "a web downloader",
-  wc: "a file counter",
-  which: "an executable locator",
-  whoami: "the current user viewer",
-  who: "a logged-in user viewer",
-  xargs: "a command builder",
-  yes: "a repeated output generator",
-  partx: "a kernel partition-table updater",
-  prlimit: "a process resource-limit tool",
-  setpriv: "a process privilege configuration tool",
-};
-
-const DIRECT_GUIDES: Readonly<Record<string, string>> = {
-  alias: "alias",
-  cat: "cat",
-  clear: "clear",
-  env: "env",
-  export: "export",
-  history: "history",
-  ls: "ls",
-  mkdir: "mkdir",
-  mv: "mv",
-  ps: "ps",
-  pwd: "pwd",
-  rm: "rm",
-  sort: "sort",
-  top: "top",
-  touch: "touch",
-  type: "type",
-  uname: "uname",
-  wc: "wc",
-  which: "which",
-  whoami: "whoami",
-};
 
 const GUIDE_RESOLVERS: readonly GuideResolver[] = [
   (tokens) => matchCommand(tokens, "cd", "cd"),
@@ -247,204 +118,6 @@ const GUIDE_RESOLVERS: readonly GuideResolver[] = [
   (tokens) => matchCommand(tokens, "pacman", resolvePacmanGuide(tokens)),
 ];
 
-const MUTATING_GUIDES = new Set([
-  "alias",
-  "chrt",
-  "chgrp",
-  "chmod",
-  "chown",
-  "cp",
-  "echo",
-  "export",
-  "gzip",
-  "install",
-  "ln",
-  "mkdir",
-  "mktemp",
-  "mount",
-  "depmod",
-  "fstrim",
-  "fdisk",
-  "insmod",
-  "ionice",
-  "logger",
-  "modprobe",
-  "mv",
-  "nsenter",
-  "passwd",
-  "pacmanInstall",
-  "pacmanRemove",
-  "pacmanSyu",
-  "pacmanUpgrade",
-  "popd",
-  "pushd",
-  "rm",
-  "rmdir",
-  "renice",
-  "rmmod",
-  "sed",
-  "setpriv",
-  "set",
-  "stty",
-  "swapoff",
-  "swapon",
-  "sync",
-  "sysctl",
-  "taskset",
-  "tee",
-  "tarCreate",
-  "touch",
-  "truncate",
-  "umask",
-  "umount",
-  "unalias",
-  "unset",
-  "udevadm",
-  "unshare",
-  "partx",
-  "prlimit",
-  "systemctlDaemonReload",
-  "systemctlDisable",
-  "systemctlEnable",
-  "systemctlRestart",
-  "systemctlStart",
-  "systemctlStop",
-  "tarAppend",
-  "tarDelete",
-  "tarExtract",
-  "tarUpdate",
-]);
-
-const DANGEROUS_GUIDES = new Set(["chrt", "dd", "exec", "fdisk", "fsck", "fstrim", "insmod", "kill", "modprobe", "mount", "nsenter", "partx", "passwd", "pacmanRemove", "pacmanUpgrade", "pkill", "prlimit", "rm", "rmmod", "setpriv", "shred", "source", "swapoff", "sysctl", "systemctlDisable", "systemctlRestart", "systemctlStart", "systemctlStop", "tarDelete", "tarExtract", "taskset", "truncate", "udevadm", "umount", "unshare"]);
-
-const EXTERNAL_GUIDES = new Set(["curl", "rsync", "scp", "ssh", "wget", "xargs"]);
-
-const ARGUMENT_MEANINGS: Readonly<Record<string, string>> = {
-  alias: "the name and shortcut to save in this shell",
-  awk: "the program and input fields to process",
-  basename: "the path and optional suffix to strip",
-  blkid: "the block device whose filesystem tags should be printed",
-  chgrp: "the new group and path to change",
-  chrt: "the scheduling policy, priority, or process ID to inspect",
-  cd: "the directory where the shell should move",
-  chmod: "the permission mode and path to change",
-  chown: "the new user, group, and path",
-  comm: "the two sorted files to compare",
-  cp: "the source path and destination path",
-  curl: "the URL and optional request data",
-  cut: "the fields, characters, or bytes to select",
-  dirname: "the path whose directory name should be printed",
-  diff: "the two files or directories to compare",
-  depmod: "the kernel release whose module dependencies should be generated",
-  file: "the path to identify",
-  fdisk: "the block device whose partition table should be inspected",
-  findType: "the starting path and entry type to keep",
-  findName: "the starting path and search pattern",
-  findfs: "the label, UUID, or partition tag to resolve",
-  findmnt: "the device or mountpoint to inspect",
-  fstrim: "the mounted filesystem whose unused blocks should be discarded",
-  fsck: "the filesystem to check",
-  getconf: "the configuration variable and optional pathname to query",
-  getent: "the NSS database and optional key to query",
-  grep: "the pattern and file whose contents will be read",
-  groups: "the user whose group membership should be printed",
-  hostname: "the name or hostname information to inspect",
-  id: "the user whose identity should be printed",
-  install: "the source file and destination path",
-  insmod: "the kernel module file to insert",
-  ip: "the network object and address or route arguments",
-  ionice: "the process ID or command whose I/O priority should change",
-  jobs: "the shell job identifier to inspect",
-  echo: "the text to print or write",
-  last: "the user or terminal whose login records should be shown",
-  head: "the line count and file to read",
-  journalctlBoot: "the boot filter to inspect",
-  kill: "the process ID that receives the signal",
-  less: "the file to read",
-  ln: "the target and new link name",
-  man: "the command whose manual page will open",
-  mkdir: "the directory to create",
-  mktemp: "the filename template or temporary directory",
-  modinfo: "the kernel module whose metadata should be printed",
-  modprobe: "the kernel module to load or remove",
-  mount: "the device and directory to connect",
-  mv: "the source path and new path",
-  nice: "the command whose scheduling priority should change",
-  nl: "the file whose lines should be numbered",
-  nohup: "the command that should survive terminal hangup",
-  nsenter: "the target process ID and namespaces to enter",
-  passwd: "the account whose password status should change",
-  paste: "the files whose lines should be joined",
-  pacmanInstall: "the package to install",
-  pacmanQueryInfo: "the installed package to inspect",
-  pacmanQuerySearch: "the term to search among installed packages",
-  pacmanRemove: "the package to remove",
-  pacmanSearchRepo: "the term to search in repositories",
-  pgrep: "the process name or pattern to find",
-  pkill: "the process pattern that receives the signal",
-  printf: "the format string and values to print",
-  printenv: "the environment variable to read",
-  pushd: "the directory to push onto the shell stack",
-  read: "the shell variables that receive input",
-  readlink: "the symbolic link or path to resolve",
-  realpath: "the path to canonicalize",
-  renice: "the process, process group, or user whose priority should change",
-  rm: "the path to remove",
-  rmdir: "the empty directory to remove",
-  rmmod: "the kernel module to remove",
-  rsync: "the source and destination paths to synchronize",
-  scp: "the local or remote source and destination paths",
-  sed: "the editing script and input file",
-  seq: "the first, increment, and last numbers",
-  setpriv: "the program whose privilege context should change",
-  shred: "the file to overwrite or remove",
-  split: "the input file and output prefix",
-  ss: "the socket filters to inspect",
-  sort: "the file whose lines will be sorted",
-  source: "the shell file to read and execute",
-  stat: "the path whose metadata should be printed",
-  su: "the account and optional command to run as that user",
-  swapoff: "the swap device or file to disable",
-  swapon: "the swap device or file to enable",
-  sysctl: "the kernel parameter or configuration file to inspect",
-  systemctlStatus: "the service to inspect",
-  systemctlStart: "the service to start",
-  systemctlStop: "the service to stop",
-  systemctlRestart: "the service to restart",
-  systemctlEnable: "the service to enable at startup",
-  systemctlDisable: "the service to disable at startup",
-  taskset: "the CPU mask or process whose affinity should change",
-  tac: "the input file whose records should be reversed",
-  tail: "the line count and file to read",
-  tarCreate: "the archive name and files to store in it",
-  tar: "the archive operation and its archive filename",
-  tarAppend: "the archive name and files to append",
-  tarDelete: "the uncompressed archive and members to remove",
-  tarDiff: "the archive and filesystem members to compare",
-  tarExtract: "the archive and optional members to extract",
-  tarList: "the archive name to inspect",
-  tarUpdate: "the archive name and files to update",
-  tee: "the output files that should receive a copy",
-  test: "the file, string, or numeric condition to evaluate",
-  touch: "the file to create or timestamp to update",
-  tr: "the character sets to translate or delete",
-  truncate: "the file and target size to apply",
-  type: "the command name to resolve",
-  umask: "the permission mask to show or set",
-  umount: "the device or directory to detach",
-  unshare: "the namespaces and program to isolate",
-  udevadm: "the device path or udev subcommand to inspect",
-  uniq: "the input whose adjacent duplicates should be filtered",
-  unset: "the variable or function name to remove",
-  uptime: "the uptime format or display mode",
-  wget: "the URL and download destination",
-  wc: "the file to measure",
-  which: "the executable name to locate",
-  who: "the login record or output mode to inspect",
-  xargs: "the input items and command to construct",
-  partx: "the block device and partition numbers to update",
-  prlimit: "the process and resource limits to inspect or set",
-};
 
 function normalize(input: string): string {
   let normalized = "";
@@ -725,6 +398,19 @@ function processSubstitutionMeaningFromWord(word: ProcessSubstitutionWord): stri
   const command = nestedCommandWords(word)[0]?.raw;
   const description = command ? COMMAND_NAMES[command] ?? "a shell command or program" : "an inner command";
   return `runs ${description} and exposes its output as a temporary input`;
+}
+
+function commandSubstitutionMeaningFromWord(substitution: Extract<ShellSubstitution, { kind: "command-substitution" }>): string {
+  const command = substitution.body.pipelines[0]?.commands[0];
+  const name = command ? commandWords(command)[0]?.raw : undefined;
+  const description = name ? COMMAND_NAMES[name] ?? "a shell command or program" : "an inner command";
+  return `runs ${description} and inserts its output into this word`;
+}
+
+function substitutionMeaning(substitution: ShellSubstitution): string {
+  return substitution.kind === "process-substitution"
+    ? processSubstitutionMeaningFromWord(substitution)
+    : commandSubstitutionMeaningFromWord(substitution);
 }
 
 function commOptionMeaning(token: string): string | undefined {
@@ -1236,9 +922,14 @@ function syntaxSteps(stages: readonly ParsedStage[], separators: readonly string
         }];
       }
 
-      return part.kind === "process-substitution"
-        ? [{ token: part.raw, explanation: processSubstitutionMeaningFromWord(part) }]
-        : [];
+      if (part.kind === "process-substitution" || part.kind === "command-substitution") {
+        return [{ token: part.raw, explanation: substitutionMeaning(part) }];
+      }
+
+      return shellSubstitutions(part).map((substitution) => ({
+        token: substitution.raw,
+        explanation: substitutionMeaning(substitution),
+      }));
     }),
   ]);
 }
@@ -1460,6 +1151,87 @@ function riskForPipeline(stages: readonly ParsedStage[], nestedCommands: readonl
   return riskForGuideIds(guideIds, stages.length > 1 || nestedCommands.length > 0);
 }
 
+function commandOriginDescription(origin: CommandOrigin): string {
+  switch (origin) {
+    case "top-level":
+      return "the command line";
+    case "process-substitution":
+      return "a process substitution";
+    case "command-substitution":
+      return "a command substitution";
+    case "find-exec":
+      return "find -exec";
+    default: {
+      const _exhaustive: never = origin;
+      return _exhaustive;
+    }
+  }
+}
+
+function diagnosticsForAnalyses(analyses: readonly CommandAnalysis[]): readonly CommandDiagnostic[] {
+  return analyses
+    .filter((analysis) => !analysis.resolved.guideId || !analysis.resolved.manPage)
+    .map((analysis) => ({
+      kind: "unknown-command" as const,
+      command: analysis.resolved.name || analysis.resolved.node.raw,
+      origin: analysis.origin,
+      message: `No local guide is available for ${analysis.resolved.name || "this command"} inside ${commandOriginDescription(analysis.origin)}.`,
+    }));
+}
+
+function knownCommandSummaries(analyses: readonly CommandAnalysis[]): readonly KnownCommandSummary[] {
+  const seen = new Set<string>();
+
+  return analyses.flatMap((analysis) => {
+    const command = analysis.resolved.name;
+
+    if (!analysis.resolved.manPage || !command || seen.has(`${command}:${analysis.origin}`)) {
+      return [];
+    }
+
+    seen.add(`${command}:${analysis.origin}`);
+    return [{
+      command,
+      purpose: analysis.resolved.manPage.purpose,
+      origin: analysis.origin,
+      effects: analysis.effects,
+    }];
+  });
+}
+
+function aggregateEffects(analyses: readonly CommandAnalysis[]): readonly CommandEffect[] {
+  return [...new Set(analyses.flatMap((analysis) => analysis.effects))];
+}
+
+function aggregateFoundations(analyses: readonly CommandAnalysis[]): readonly LinuxFoundation[] {
+  return [...new Set(analyses.flatMap((analysis) => foundationsForCommand(analysis.resolved)))];
+}
+
+function partialExplanationRisk(): { label: string; message: string } {
+  return {
+    label: "Partially understood",
+    message: "The known parts are explained below, but at least one command has no local guide. Check its documentation before running the whole command.",
+  };
+}
+
+function unknownPlainEnglish(
+  unknownCommand: string,
+  knownCommands: readonly KnownCommandSummary[],
+): string {
+  if (knownCommands.length === 0) {
+    return `I do not have a reliable guide for ${unknownCommand} yet. Its behavior cannot be inferred from the command name alone.`;
+  }
+
+  const known = knownCommands.map((summary) => {
+    const effects = summary.effects.length > 0
+      ? ` (${summary.effects.map(effectLabel).join(", ")})`
+      : "";
+    return `${summary.command}${effects}`;
+  }).join(", ");
+
+  return `I do not have a reliable guide for ${unknownCommand} yet. I still recognized ${known}. The effects of ${unknownCommand} itself remain unknown.`;
+}
+
 export function explainCommand(input: string, guides: GuideCatalog): CommandExplanation {
   const normalizedInput = normalize(input);
 
@@ -1470,11 +1242,16 @@ export function explainCommand(input: string, guides: GuideCatalog): CommandExpl
   const parsedShell = parseShell(input.trim());
 
   if (parsedShell.kind === "error") {
+    const command = normalizedInput.split(/\s+/, 1)[0] ?? normalizedInput;
+
     return {
       kind: "unknown",
       input: normalizedInput,
-      command: normalizedInput.split(/\s+/, 1)[0] ?? normalizedInput,
+      command,
       plainEnglish: parsedShell.message,
+      diagnostics: [{ kind: "syntax-error", command, origin: "top-level", message: parsedShell.message }],
+      knownCommands: [],
+      effects: [],
     };
   }
 
@@ -1485,26 +1262,40 @@ export function explainCommand(input: string, guides: GuideCatalog): CommandExpl
     ...(pipelineIndex < parsedShell.ast.operators.length ? [parsedShell.ast.operators[pipelineIndex]] : []),
   ]);
   const firstStage = stages[0];
-  const unknownStage = stages.find((stage) => !stage.guideId || !stage.guide);
 
   if (!firstStage) {
-    return { kind: "unknown", input: normalizedInput, command: normalizedInput };
+    return {
+      kind: "unknown",
+      input: normalizedInput,
+      command: normalizedInput,
+      diagnostics: [{ kind: "syntax-error", command: normalizedInput, origin: "top-level", message: "No command was found." }],
+      knownCommands: [],
+      effects: [],
+    };
   }
 
   const analyses = analyzeShell(parsedShell.ast, {
     catalog: guides,
     resolveGuide: (resolvedWords) => resolveGuide(resolvedWords, guides),
   });
-  const identifiedCommands = flattenAnalyses(analyses).map((analysis) => analysis.resolved);
-  const unknownNestedCommand = identifiedCommands.find((identified) => !identified.guideId || !identified.manPage);
+  const flattenedAnalyses = flattenAnalyses(analyses);
+  const diagnostics = diagnosticsForAnalyses(flattenedAnalyses);
+  const knownCommands = knownCommandSummaries(flattenedAnalyses);
+  const effects = aggregateEffects(flattenedAnalyses);
+  const foundations = aggregateFoundations(flattenedAnalyses);
+  const identifiedCommands = flattenedAnalyses.map((analysis) => analysis.resolved);
+  const unknownTopLevel = flattenedAnalyses.find((analysis) => analysis.origin === "top-level" && (!analysis.resolved.guideId || !analysis.resolved.manPage));
 
-  if (unknownStage || unknownNestedCommand) {
-    const unknownCommand = unknownStage?.command ?? unknownNestedCommand?.name ?? firstStage.command;
+  if (unknownTopLevel) {
+    const unknownCommand = unknownTopLevel.resolved.name || firstStage.command;
     return {
       kind: "unknown",
       input: normalizedInput,
       command: unknownCommand,
-      ...(stages.length > 1 || unknownNestedCommand ? { plainEnglish: `This command connects ${stages.map((stage) => stage.command).join(" → ")}, but I do not have a reliable guide for ${unknownCommand} yet.` } : {}),
+      plainEnglish: unknownPlainEnglish(unknownCommand, knownCommands),
+      diagnostics,
+      knownCommands,
+      effects,
     };
   }
 
@@ -1512,7 +1303,14 @@ export function explainCommand(input: string, guides: GuideCatalog): CommandExpl
   const guide = firstStage.guide;
 
   if (!guideId || !guide) {
-    return { kind: "unknown", input: normalizedInput, command: firstStage.command };
+    return {
+      kind: "unknown",
+      input: normalizedInput,
+      command: firstStage.command,
+      diagnostics,
+      knownCommands,
+      effects,
+    };
   }
 
   const isPipeline = stages.length > 1;
@@ -1541,6 +1339,14 @@ export function explainCommand(input: string, guides: GuideCatalog): CommandExpl
     : hasProcessSubstitutionInPipeline
       ? `${baseNote} Process substitution (<(...)) runs each inner command and exposes its output as an input without creating named intermediate files.`
       : baseNote;
+  const risk = diagnostics.length > 0
+    ? partialExplanationRisk()
+    : isPipeline
+      ? riskForPipeline(stages, identifiedCommands)
+      : riskForGuideIds(
+        identifiedCommands.flatMap((command) => (command.guideId ? [command.guideId] : [])),
+        identifiedCommands.length > 1,
+      );
 
   return {
     kind: "recognized",
@@ -1550,10 +1356,11 @@ export function explainCommand(input: string, guides: GuideCatalog): CommandExpl
     plainEnglish,
     steps: isPipeline ? pipelineSteps(stages, separators, guides) : stepsFor(firstStage, guides),
     levels: explanationLevels(stages, separators, plainEnglish, guides),
+    coverage: diagnostics.length > 0 ? "partial" : "complete",
+    diagnostics,
+    effects,
+    foundations,
     note,
-    risk: isPipeline ? riskForPipeline(stages, identifiedCommands) : riskForGuideIds(
-      identifiedCommands.flatMap((command) => (command.guideId ? [command.guideId] : [])),
-      identifiedCommands.length > 1,
-    ),
+    risk,
   };
 }

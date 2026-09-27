@@ -3,13 +3,31 @@ export type ShellScriptOperator = "&&" | "||" | ";";
 export const REDIRECTION_OPERATORS = ["2>>", "&>>", "2>&", "2>", "&>", ">&", ">>", "<<<", "<&", ">", "<"] as const;
 export type RedirectionOperator = (typeof REDIRECTION_OPERATORS)[number];
 
+export type ShellSubstitution =
+  | {
+      kind: "process-substitution";
+      raw: string;
+      body: ShellAst;
+    }
+  | {
+      kind: "command-substitution";
+      raw: string;
+      body: ShellAst;
+    };
+
 export type WordNode =
   | {
       kind: "word";
       raw: string;
+      substitutions: readonly ShellSubstitution[];
     }
   | {
       kind: "process-substitution";
+      raw: string;
+      body: ShellAst;
+    }
+  | {
+      kind: "command-substitution";
       raw: string;
       body: ShellAst;
     };
@@ -70,8 +88,20 @@ type ReadWordResult =
       message: string;
     };
 
+function substitutionKindAt(input: string, start: number): ShellSubstitution["kind"] | undefined {
+  if (input[start] === "<" && input[start + 1] === "(") {
+    return "process-substitution";
+  }
+
+  if (input[start] === "$" && input[start + 1] === "(") {
+    return "command-substitution";
+  }
+
+  return undefined;
+}
+
 function readDelimited(input: string, start: number): { value: string; end: number } | null {
-  if (input[start] !== "<" || input[start + 1] !== "(") {
+  if (!substitutionKindAt(input, start)) {
     return null;
   }
 
@@ -111,7 +141,7 @@ function readDelimited(input: string, start: number): { value: string; end: numb
 }
 
 function parseProcessSubstitution(raw: string): ShellParseResult {
-  const bodyStart = raw.indexOf("<(") + 2;
+  const bodyStart = 2;
   const body = raw.slice(bodyStart, -1).trim();
 
   if (!body) {
@@ -125,8 +155,28 @@ function parseProcessSubstitution(raw: string): ShellParseResult {
   return parseShell(body);
 }
 
+function parseCommandSubstitution(raw: string): ShellParseResult {
+  const body = raw.slice(2, -1).trim();
+
+  if (!body) {
+    return {
+      kind: "error",
+      input: raw,
+      message: "Command substitution is missing its inner command.",
+    };
+  }
+
+  return parseShell(body);
+}
+
+function parseSubstitution(raw: string, kind: ShellSubstitution["kind"]): ShellParseResult {
+  return kind === "process-substitution"
+    ? parseProcessSubstitution(raw)
+    : parseCommandSubstitution(raw);
+}
+
 function matchRedirection(input: string, start: number): RedirectionOperator | undefined {
-  if (input[start] === "<" && input[start + 1] === "(") {
+  if (substitutionKindAt(input, start)) {
     return undefined;
   }
 
@@ -134,14 +184,19 @@ function matchRedirection(input: string, start: number): RedirectionOperator | u
 }
 
 function readWord(input: string, start: number): ReadWordResult {
-  if (input[start] === "<" && input[start + 1] === "(") {
-    const processSubstitution = readDelimited(input, start);
+  const initialSubstitutionKind = substitutionKindAt(input, start);
 
-    if (!processSubstitution) {
-      return { kind: "error", message: "Process substitution is missing its closing parenthesis." };
+  if (initialSubstitutionKind) {
+    const substitution = readDelimited(input, start);
+
+    if (!substitution) {
+      return {
+        kind: "error",
+        message: `${initialSubstitutionKind === "process-substitution" ? "Process" : "Command"} substitution is missing its closing parenthesis.`,
+      };
     }
 
-    const body = parseProcessSubstitution(processSubstitution.value);
+    const body = parseSubstitution(substitution.value, initialSubstitutionKind);
 
     if (body.kind === "error") {
       return body;
@@ -150,21 +205,42 @@ function readWord(input: string, start: number): ReadWordResult {
     return {
       kind: "word",
       word: {
-        kind: "process-substitution",
-        raw: processSubstitution.value,
+        kind: initialSubstitutionKind,
+        raw: substitution.value,
         body: body.ast,
       },
-      end: processSubstitution.end + 1,
+      end: substitution.end + 1,
     };
   }
 
   let raw = "";
+  const substitutions: ShellSubstitution[] = [];
   let quote: '"' | "'" | null = null;
 
   for (let index = start; index < input.length; index += 1) {
     const character = input[index];
 
     if (quote) {
+      if (quote === '"' && input[index] === "$" && input[index + 1] === "(") {
+        const substitutionKind = substitutionKindAt(input, index);
+        const substitution = readDelimited(input, index);
+
+        if (!substitution || !substitutionKind) {
+          return { kind: "error", message: "Command substitution is missing its closing parenthesis." };
+        }
+
+        const body = parseSubstitution(substitution.value, substitutionKind);
+
+        if (body.kind === "error") {
+          return body;
+        }
+
+        raw += substitution.value;
+        substitutions.push({ kind: substitutionKind, raw: substitution.value, body: body.ast });
+        index = substitution.end;
+        continue;
+      }
+
       raw += character;
 
       if (character === "\\" && quote === '"' && input[index + 1]) {
@@ -174,6 +250,30 @@ function readWord(input: string, start: number): ReadWordResult {
         quote = null;
       }
 
+      continue;
+    }
+
+    const substitutionKind = substitutionKindAt(input, index);
+
+    if (substitutionKind) {
+      const substitution = readDelimited(input, index);
+
+      if (!substitution) {
+        return {
+          kind: "error",
+          message: `${substitutionKind === "process-substitution" ? "Process" : "Command"} substitution is missing its closing parenthesis.`,
+        };
+      }
+
+      const body = parseSubstitution(substitution.value, substitutionKind);
+
+      if (body.kind === "error") {
+        return body;
+      }
+
+      raw += substitution.value;
+      substitutions.push({ kind: substitutionKind, raw: substitution.value, body: body.ast });
+      index = substitution.end;
       continue;
     }
 
@@ -201,7 +301,7 @@ function readWord(input: string, start: number): ReadWordResult {
   }
 
   return raw
-    ? { kind: "word", word: { kind: "word", raw }, end: start + raw.length }
+    ? { kind: "word", word: { kind: "word", raw, substitutions }, end: start + raw.length }
     : { kind: "error", message: `Expected a shell word near character ${start + 1}.` };
 }
 
@@ -308,11 +408,11 @@ function splitTopLevel(input: string): ShellParseResult | readonly SplitSegment[
         continue;
       }
 
-      const processSubstitution = readDelimited(input, index);
+      const substitution = readDelimited(input, index);
 
-      if (processSubstitution) {
-        current += processSubstitution.value;
-        index = processSubstitution.end;
+      if (substitution) {
+        current += substitution.value;
+        index = substitution.end;
         continue;
       }
 
@@ -438,8 +538,20 @@ export function processSubstitutions(ast: ShellAst): readonly WordNode[] {
       command.parts.flatMap((part) => {
         const words = part.kind === "redirection" ? [part.target] : [part];
 
-        return words.filter((word): word is Extract<WordNode, { kind: "process-substitution" }> => word.kind === "process-substitution");
+        return words.flatMap((word) => {
+          if (word.kind === "process-substitution") {
+            return [word];
+          }
+
+          return word.kind === "word"
+            ? word.substitutions.filter((substitution) => substitution.kind === "process-substitution")
+            : [];
+        });
       }),
     ),
   );
+}
+
+export function shellSubstitutions(word: WordNode): readonly ShellSubstitution[] {
+  return word.kind === "word" ? word.substitutions : [word];
 }

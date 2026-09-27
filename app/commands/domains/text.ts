@@ -1,0 +1,353 @@
+import type { CommandCatalog } from "../types";
+export const textGuides = {
+  grep: {
+    purpose: "Search file contents for lines that contain a pattern.",
+    syntax: "grep pattern file",
+    parts: [
+      { token: "-H", meaning: "Always print the filename before a matching line." },
+      { token: "-n", meaning: "Print matching line numbers in a real grep command." },
+      { token: "-i", meaning: "Ignore letter case in a real grep command." },
+    ],
+    note: "find locates paths. grep reads the text inside those paths.",
+  },
+  head: {
+    purpose: "Print the beginning of a file.",
+    syntax: "head -n count file",
+    parts: [
+      { token: "-n", meaning: "Choose how many lines to print." },
+      { token: "-20", meaning: "Print only the first 20 lines." },
+    ],
+    note: "head is useful for checking a file format before processing the whole file.",
+  },
+  tail: {
+    purpose: "Print the end of a file.",
+    syntax: "tail -n count file",
+    parts: [
+      { token: "-n", meaning: "Choose how many lines to print." },
+      { token: "-f", meaning: "Follow new log lines in a real terminal." },
+    ],
+    note: "tail -f keeps running. The exercise uses -n so it returns immediately.",
+  },
+  wc: {
+    purpose: "Count lines, words, and bytes in a file.",
+    syntax: "wc -l file",
+    parts: [
+      { token: "-l", meaning: "Print the line count." },
+      { token: "-w", meaning: "Print the word count in a real wc command." },
+      { token: "-c", meaning: "Print the byte count in a real wc command." },
+    ],
+    note: "Use one flag when you want a focused measurement instead of all three counts.",
+  },
+  sort: {
+    purpose: "Print file lines in sorted order.",
+    syntax: "sort [options] file",
+    parts: [
+      { token: "-r", meaning: "Reverse the sort order in a real sort command." },
+      { token: "-n", meaning: "Compare values as numbers in a real sort command." },
+    ],
+    note: "sort prints reordered output. It does not rewrite the source file unless you redirect it.",
+  },
+  sed: {
+    purpose: "Transform or filter text one line at a time.",
+    syntax: "sed [options] 'script' [file]",
+    parts: [
+      { token: "-n", meaning: "Suppress automatic printing so a script can choose what to show." },
+      { token: "-E", meaning: "Use extended regular expressions." },
+      { token: "-i", meaning: "Edit files in place instead of only printing transformed text." },
+      { token: "-e", meaning: "Add a script to execute." },
+      { token: "-f", meaning: "Read scripts from a file." },
+    ],
+    note: "sed prints its result by default. Treat -i as a write operation and test the expression without it first.",
+  },
+  awk: {
+    purpose: "Read structured text, select fields, and run small data-processing programs.",
+    syntax: "awk [options] 'program' [file]",
+    parts: [
+      { token: "-F", meaning: "Set the input field separator." },
+      { token: "-v", meaning: "Set a variable before the program starts." },
+      { token: "-f", meaning: "Read the awk program from a file." },
+      { token: "$1", meaning: "Refer to the first field on the current input line." },
+      { token: "$0", meaning: "Refer to the complete current input line." },
+    ],
+    note: "awk is a programming language as well as a command. Quote its program so the shell does not expand it first.",
+  },
+  cut: {
+    purpose: "Select columns or character ranges from each input line.",
+    syntax: "cut [options] [file]",
+    parts: [
+      { token: "-d", meaning: "Use a chosen delimiter instead of a tab." },
+      { token: "-f", meaning: "Select fields by number or range." },
+      { token: "-c", meaning: "Select character positions." },
+      { token: "-b", meaning: "Select byte positions." },
+      { token: "--complement", meaning: "Select everything except the chosen positions." },
+    ],
+    note: "cut works best with predictable delimiters. Use awk when fields need conditions or calculations.",
+  },
+  tr: {
+    purpose: "Translate, delete, or squeeze characters from standard input.",
+    syntax: "tr [options] set1 [set2]",
+    parts: [
+      { token: "-d", meaning: "Delete characters found in the first set." },
+      { token: "-s", meaning: "Collapse repeated characters into one." },
+      { token: "-c", meaning: "Use the complement of the first set." },
+      { token: "-t", meaning: "Trim the first set to the length of the second before translating." },
+    ],
+    note: "tr reads standard input. Pair it with a pipe or input redirection when the source is a file.",
+  },
+  tee: {
+    purpose: "Copy standard input to the terminal and one or more files at the same time.",
+    syntax: "tee [options] file",
+    parts: [
+      { token: "-a", meaning: "Append to the file instead of replacing it." },
+      { token: "-i", meaning: "Ignore an interrupt signal while writing." },
+    ],
+    note: "tee is useful when a pipeline should show its output and save a copy. The destination file can still be overwritten.",
+  },
+  uniq: {
+    purpose: "Remove or report adjacent repeated lines.",
+    syntax: "uniq [options] [input [output]]",
+    parts: [
+      { token: "-c", meaning: "Prefix each line with its number of repetitions." },
+      { token: "-d", meaning: "Print only lines that repeat." },
+      { token: "-u", meaning: "Print only lines that appear once." },
+      { token: "-i", meaning: "Compare lines without considering letter case." },
+      { token: "-f", meaning: "Skip this many fields before comparing." },
+    ],
+    note: "uniq only detects repetitions next to each other. Sort input first when duplicates can be separated.",
+  },
+  tac: {
+    purpose: "Print input lines in reverse order.",
+    syntax: "tac [options] [file]",
+    parts: [
+      { token: "-s", meaning: "Use a chosen separator instead of a newline." },
+      { token: "-b", meaning: "Attach the separator before each record." },
+      { token: "-r", meaning: "Treat the separator as a regular expression." },
+    ],
+    note: "tac is cat backwards. It prints a transformed view and does not edit the source file.",
+  },
+  nl: {
+    purpose: "Number the lines of text.",
+    syntax: "nl [options] [file]",
+    parts: [
+      { token: "-b", meaning: "Choose which lines receive numbers." },
+      { token: "-n", meaning: "Choose the number alignment and format." },
+      { token: "-w", meaning: "Choose the width of the number field." },
+      { token: "-s", meaning: "Choose the separator after each line number." },
+    ],
+    note: "nl is a formatting command. It does not change the input file.",
+  },
+  paste: {
+    purpose: "Join corresponding lines from files side by side.",
+    syntax: "paste [options] files",
+    parts: [
+      { token: "-d", meaning: "Use chosen delimiters between columns." },
+      { token: "-s", meaning: "Combine each file's lines serially instead of side by side." },
+    ],
+    note: "Use paste to combine columns. It reads lines as records and does not parse CSV quoting rules.",
+  },
+  split: {
+    purpose: "Split a file or standard input into smaller output files.",
+    syntax: "split [options] [file [prefix]]",
+    parts: [
+      { token: "-l", meaning: "Split after this many lines." },
+      { token: "-b", meaning: "Split after this many bytes." },
+      { token: "-n", meaning: "Split into this many output pieces." },
+      { token: "-d", meaning: "Use numeric suffixes instead of alphabetic suffixes." },
+      { token: "-a", meaning: "Choose the length of the output suffix." },
+    ],
+    note: "split creates files with a prefix. Check the destination directory before creating many pieces.",
+  },
+  comm: {
+    purpose: "Compare two sorted inputs line by line in three columns: only in the first, only in the second, and in both.",
+    syntax: "comm [options] file1 file2",
+    parts: [
+      { token: "-1", meaning: "Hide lines found only in the first file." },
+      { token: "-2", meaning: "Hide lines found only in the second file." },
+      { token: "-3", meaning: "Hide lines found in both files." },
+      { token: "-23", meaning: "hides columns 2 and 3, leaving only lines unique to the first input." },
+      { token: "--check-order", meaning: "Require both inputs to be sorted." },
+    ],
+    note: "comm expects sorted input. Use sort first when the files are not already ordered.",
+  },
+  diff: {
+    purpose: "Show line-by-line differences between files or directories.",
+    syntax: "diff [options] file1 file2",
+    parts: [
+      { token: "-u", meaning: "Use the compact unified diff format." },
+      { token: "-c", meaning: "Use the context diff format." },
+      { token: "-r", meaning: "Compare directory trees recursively." },
+      { token: "-q", meaning: "Report only whether files differ." },
+      { token: "-w", meaning: "Ignore all whitespace differences." },
+    ],
+    note: "diff reports changes; it does not apply them. Use patch or a version-control tool to apply a reviewed diff.",
+  },
+  xargs: {
+    purpose: "Build and run commands from items read on standard input.",
+    syntax: "xargs [options] command",
+    parts: [
+      { token: "-0", meaning: "Read NUL-separated items, which safely handles spaces in filenames." },
+      { token: "-n", meaning: "Pass at most this many input items per command invocation." },
+      { token: "-P", meaning: "Run this many command invocations in parallel." },
+      { token: "-I", meaning: "Replace a placeholder in the command with each input item." },
+      { token: "-t", meaning: "Print each command before running it." },
+      { token: "-p", meaning: "Ask for confirmation before each command." },
+    ],
+    note: "xargs executes generated commands. Prefer -0 with find -print0 and add -p or -t while learning.",
+  },
+  seq: {
+    purpose: "Print a sequence of numbers.",
+    syntax: "seq [options] first [increment] last",
+    parts: [
+      { token: "-w", meaning: "Pad numbers with leading zeroes to equal width." },
+      { token: "-f", meaning: "Format each number using a printf-style format." },
+      { token: "-s", meaning: "Use a chosen separator between numbers." },
+    ],
+    note: "seq generates text. It does not loop by itself; scripts often use it with a shell loop or xargs.",
+  },
+  date: {
+    purpose: "Print or format the current date and time, or parse a date expression.",
+    syntax: "date [options] [+format]",
+    parts: [
+      { token: "-u", meaning: "Use Coordinated Universal Time instead of local time." },
+      { token: "-d", meaning: "Format a date described by a human-readable string." },
+      { token: "-I", meaning: "Print an ISO 8601 date or timestamp." },
+      { token: "-R", meaning: "Print an RFC 5322 date and time." },
+      { token: "+%Y-%m-%d", meaning: "Use a format string for the output fields." },
+    ],
+    note: "date displays time by default. Setting the system clock is a separate privileged operation.",
+  },
+  printf: {
+    purpose: "Print formatted text without the portability surprises of echo.",
+    syntax: "printf format [arguments]",
+    parts: [
+      { token: "%s", meaning: "Insert a string argument." },
+      { token: "%d", meaning: "Insert an integer argument." },
+      { token: "\\n", meaning: "Insert a newline escape." },
+      { token: "-v", meaning: "In Bash, assign formatted output to a variable instead of printing it." },
+    ],
+    note: "printf is both a Bash builtin and a standalone utility. Quote format strings and user input separately.",
+  },
+  base64: {
+    purpose: "Encode binary data as Base64 text or decode Base64 text back to bytes.",
+    syntax: "base64 [options] [file]",
+    parts: [
+      { token: "-d", meaning: "Decode Base64 input instead of encoding it." },
+      { token: "-w", meaning: "Wrap encoded output after this many characters." },
+      { token: "-i", meaning: "Ignore non-alphabet characters while decoding." },
+    ],
+    note: "Base64 is an encoding, not encryption. Anyone with the text can decode it.",
+  },
+  sha256sum: {
+    purpose: "Calculate or verify SHA-256 checksums for files.",
+    syntax: "sha256sum [options] file",
+    parts: [
+      { token: "-c", meaning: "Read checksum lines and verify the listed files." },
+      { token: "-b", meaning: "Read files in binary mode." },
+      { token: "-t", meaning: "Read files in text mode." },
+      { token: "--tag", meaning: "Print a named BSD-style checksum record." },
+    ],
+    note: "A matching checksum verifies content identity, not that the source was trustworthy.",
+  },
+  md5sum: {
+    purpose: "Calculate or verify MD5 checksums for files.",
+    syntax: "md5sum [options] file",
+    parts: [
+      { token: "-c", meaning: "Read checksum lines and verify the listed files." },
+      { token: "-b", meaning: "Read files in binary mode." },
+      { token: "-t", meaning: "Read files in text mode." },
+      { token: "--tag", meaning: "Print a named BSD-style checksum record." },
+    ],
+    note: "MD5 is not suitable for security signatures. Use SHA-256 or a stronger modern hash for integrity decisions.",
+  },
+  od: {
+    purpose: "Print a file's bytes or other representations for inspection.",
+    syntax: "od [options] file",
+    parts: [
+      { token: "-A", meaning: "Choose how input offsets are printed." },
+      { token: "-t", meaning: "Choose the output type such as octal, decimal, or hexadecimal." },
+      { token: "-x", meaning: "Print hexadecimal output." },
+      { token: "-c", meaning: "Print printable characters and escaped control characters." },
+    ],
+    note: "od is a read-only inspection tool. It is useful when text tools hide non-printing bytes.",
+  },
+  fold: {
+    purpose: "Wrap long input lines to a chosen width.",
+    syntax: "fold [options] [file]",
+    parts: [
+      { token: "-w", meaning: "Wrap after this many columns or bytes." },
+      { token: "-s", meaning: "Break at whitespace when possible." },
+      { token: "-b", meaning: "Count bytes instead of screen columns." },
+    ],
+    note: "fold formats output. It does not insert permanent line breaks into the source file.",
+  },
+  fmt: {
+    purpose: "Reformat text paragraphs to fit a chosen line width.",
+    syntax: "fmt [options] [file]",
+    parts: [
+      { token: "-w", meaning: "Set the target line width." },
+      { token: "-s", meaning: "Split long lines but do not join short lines." },
+      { token: "-u", meaning: "Use uniform spacing between words and sentences." },
+    ],
+    note: "fmt rewrites formatted output. Redirect it to a new file first when you need to preserve the original.",
+  },
+  expand: {
+    purpose: "Convert tabs in input to spaces.",
+    syntax: "expand [options] [file]",
+    parts: [
+      { token: "-t", meaning: "Choose the tab stop positions." },
+      { token: "-i", meaning: "Convert only tabs at the start of lines." },
+    ],
+    note: "expand is useful before comparing text or sending it to systems that handle tabs differently.",
+  },
+  unexpand: {
+    purpose: "Convert runs of spaces back into tabs where possible.",
+    syntax: "unexpand [options] [file]",
+    parts: [
+      { token: "-a", meaning: "Convert all runs of spaces, not only leading spaces." },
+      { token: "-t", meaning: "Choose the tab stop positions." },
+    ],
+    note: "unexpand changes formatting in its output stream. It does not edit a file in place by itself.",
+  },
+  join: {
+    purpose: "Join lines from two files using a shared field.",
+    syntax: "join [options] file1 file2",
+    parts: [
+      { token: "-t", meaning: "Use a chosen field separator." },
+      { token: "-1", meaning: "Use this field from the first file as the join key." },
+      { token: "-2", meaning: "Use this field from the second file as the join key." },
+      { token: "-a", meaning: "Also print unpaired lines from the chosen file." },
+      { token: "-e", meaning: "Use a replacement for missing fields." },
+      { token: "-o", meaning: "Choose the output fields and their order." },
+    ],
+    note: "join expects both files to be sorted by their join field unless you explicitly handle ordering yourself.",
+  },
+  shuf: {
+    purpose: "Randomly permute lines or choose random items.",
+    syntax: "shuf [options] [file]",
+    parts: [
+      { token: "-i", meaning: "Use an integer range instead of a file." },
+      { token: "-n", meaning: "Output only this many results." },
+      { token: "-r", meaning: "Allow repeated selections." },
+      { token: "-e", meaning: "Treat command-line arguments as input items." },
+    ],
+    note: "shuf is useful for sampling and test data. Its default random source is not a security protocol.",
+  },
+  yes: {
+    purpose: "Repeatedly print a string until the process is stopped.",
+    syntax: "yes [string]",
+    parts: [],
+    note: "yes can quickly fill a pipe or terminal with output. Never run it without knowing where its output goes.",
+  },
+  sleep: {
+    purpose: "Pause for a chosen amount of time.",
+    syntax: "sleep duration",
+    parts: [
+      { token: "s", meaning: "Use seconds as the duration unit." },
+      { token: "m", meaning: "Use minutes as the duration unit." },
+      { token: "h", meaning: "Use hours as the duration unit." },
+      { token: "d", meaning: "Use days as the duration unit." },
+    ],
+    note: "sleep waits without changing files. A signal can interrupt it before the duration ends.",
+  },
+} satisfies CommandCatalog;
+

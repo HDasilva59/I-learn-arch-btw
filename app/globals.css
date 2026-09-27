@@ -1032,6 +1032,57 @@ input,
   text-transform: uppercase;
 }
 
+.command-explainer-diagnostics,
+.command-explainer-known {
+  margin-top: 18px;
+  padding: 13px 0 0 16px;
+  border-left: 2px solid var(--black);
+}
+
+.command-explainer-diagnostics > span,
+.command-explainer-known > span,
+.command-explainer-effects > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--black);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.command-explainer-diagnostics ul,
+.command-explainer-known ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  color: var(--ink-muted);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  list-style: none;
+}
+
+.command-explainer-known li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.command-explainer-known li code {
+  color: var(--black);
+  font-size: 11px;
+}
+
+.command-explainer-effects {
+  margin: 18px 0 0;
+  color: var(--ink-muted);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .command-breakdown {
   margin-top: 27px;
   border-top: 1px solid var(--line);
