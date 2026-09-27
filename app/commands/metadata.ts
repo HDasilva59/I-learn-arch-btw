@@ -26,6 +26,7 @@ export const COMMAND_NAMES: Readonly<Record<string, string>> = {
   dd: "a raw data copier",
   df: "a filesystem space reporter",
   diff: "a file difference reporter",
+  docker: "the Docker command-line client",
   dirname: "a directory-name extractor",
   dmesg: "a kernel message viewer",
   depmod: "a kernel module dependency builder",

@@ -19,7 +19,7 @@ newcommand: {
 
 Les commandes découvertes dans ArchWiki mais pas encore rédigées manuellement vivent dans [`domains/archwiki.ts`](./domains/archwiki.ts). Elles sont explicitement marquées comme couverture générée et doivent être enrichies avant de recevoir une documentation détaillée.
 
-L'inventaire complémentaire issu de [tldr-pages/tldr](https://github.com/tldr-pages/tldr) est généré dans [`domains/tldr.ts`](./domains/tldr.ts). Ne modifiez pas ce fichier à la main : lancez `pnpm commands:sync-tldr` pour le régénérer depuis les pages `common` et `linux` du dépôt tldr. Le synchroniseur importe les noms et chemins de pages, pas leur texte ; les fiches tldr sont donc une piste de découverte, pas un remplacement des manpages.
+L'inventaire complémentaire issu de [tldr-pages/tldr](https://github.com/tldr-pages/tldr) est généré dans [`domains/tldr.ts`](./domains/tldr.ts). Ne modifiez pas ce fichier à la main : lancez `pnpm commands:sync-tldr` pour le régénérer depuis les pages `common` et `linux` du dépôt tldr. Le synchroniseur conserve un résumé, une forme d'utilisation et les options rencontrées dans les exemples ; les fiches tldr restent une référence pratique et ne remplacent pas les manpages.
 
 Le contenu tldr est sous [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). L'attribution et les modifications sont documentées dans [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md) et dans le pied de page du site.
 

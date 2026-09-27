@@ -8,8 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "commands:sync-tldr": "node scripts/sync-tldr-commands.mjs",
+    "commands:explain:check": "node scripts/verify-command-explainer.mjs",
     "commands:check": "node scripts/verify-command-catalog.mjs",
-    "verify": "pnpm commands:check && node scripts/verify-course.mjs"
+    "verify": "pnpm commands:check && pnpm commands:explain:check && node scripts/verify-course.mjs"
   },
   "dependencies": {
     "next": "16.3.6",

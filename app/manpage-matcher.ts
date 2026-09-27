@@ -39,7 +39,7 @@ export type ResolvedCommand = CommandIdentity & {
 
 export type MatchContext = {
   commandDescription: (command: string) => string;
-  argumentMeaning: string;
+  argumentMeaning: (token: string, previousToken: string | undefined) => string;
   optionMeaning: (token: string, manPage: ManPage) => string | undefined;
   redirectionMeaning: (operator: RedirectionNode["operator"]) => string;
   processSubstitutionMeaning: (word: Extract<WordNode, { kind: "process-substitution" }>) => string;
@@ -200,6 +200,14 @@ export function matchCommand(
       continue;
     }
 
+    const exactMeaning = manPage.parts.find((candidate) => candidate.token === part.raw)?.meaning
+      ?? manPage.parts.find((candidate) => candidate.token === stripQuotes(part.raw))?.meaning;
+
+    if (exactMeaning) {
+      steps.push({ token: stripQuotes(part.raw), explanation: exactMeaning });
+      continue;
+    }
+
     const wordIndex = index;
 
     if (isOptionWord(part, name, wordIndex, context)) {
@@ -207,9 +215,12 @@ export function matchCommand(
       continue;
     }
 
+    const previousPart = argumentParts[index - 1];
+    const previousToken = previousPart?.kind === "word" ? stripQuotes(previousPart.raw) : undefined;
+
     steps.push({
       token: stripQuotes(part.raw),
-      explanation: context.argumentMeaning,
+      explanation: context.argumentMeaning(stripQuotes(part.raw), previousToken),
     });
   }
 

@@ -317,6 +317,16 @@ function resolveGuide(tokens: readonly string[], guides: GuideCatalog): string |
     }
   }
 
+  const subcommandTokens = tokens.slice(1).filter((token) => !token.startsWith("-"));
+
+  for (let length = subcommandTokens.length; length > 0; length -= 1) {
+    const subcommandGuideId = `${commandName}-${subcommandTokens.slice(0, length).join("-")}`;
+
+    if (guides[subcommandGuideId]) {
+      return subcommandGuideId;
+    }
+  }
+
   const directGuideId = DIRECT_GUIDES[commandName] ?? commandName;
 
   if (directGuideId && guides[directGuideId]) {
@@ -596,11 +606,23 @@ function stepsFor(stage: ParsedStage, guides: GuideCatalog): readonly CommandExp
     return findCommandSteps(stage, guides) ?? [];
   }
 
+  const guideId = stage.guideId;
+
   return matchManPageCommand(
     stage.resolved,
     {
       commandDescription: (command) => COMMAND_NAMES[command] ?? "a shell command or program",
-      argumentMeaning: ARGUMENT_MEANINGS[stage.guideId] ?? "the value or path passed to the command",
+      argumentMeaning: (_token, previousToken) => {
+        if (previousToken === "--filter" || previousToken === "-f") {
+          return "the filter condition passed to the command";
+        }
+
+        if (previousToken === "--format" || previousToken === "-o") {
+          return "the output format or template passed to the command";
+        }
+
+        return ARGUMENT_MEANINGS[guideId] ?? "the value or path passed to the command";
+      },
       optionMeaning: (token) => stage.command === "comm" ? commOptionMeaning(token) : undefined,
       redirectionMeaning,
       processSubstitutionMeaning: (word) => processSubstitutionMeaningFromWord(word),
