@@ -9,6 +9,7 @@ import { processesGuides } from "./domains/processes";
 import { shellGuides } from "./domains/shell";
 import { systemGuides } from "./domains/system";
 import { textGuides } from "./domains/text";
+import { tldrGuides } from "./domains/tldr";
 
 const RAW_COMMAND_GUIDES = {
   ...shellGuides,
@@ -21,6 +22,7 @@ const RAW_COMMAND_GUIDES = {
   ...packagesGuides,
   ...archivesGuides,
   ...archwikiGuides,
+  ...tldrGuides,
 };
 
 const missingArchWiki = missingArchWikiCommands(RAW_COMMAND_GUIDES);
@@ -36,4 +38,3 @@ if (missingArchWiki.length > 0) {
 export const COMMAND_GUIDES = defineCommandCatalog(RAW_COMMAND_GUIDES);
 
 export type CommandGuideId = keyof typeof COMMAND_GUIDES;
-

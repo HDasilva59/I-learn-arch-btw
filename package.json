@@ -7,6 +7,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
+    "commands:sync-tldr": "node scripts/sync-tldr-commands.mjs",
     "commands:check": "node scripts/verify-command-catalog.mjs",
     "verify": "pnpm commands:check && node scripts/verify-course.mjs"
   },

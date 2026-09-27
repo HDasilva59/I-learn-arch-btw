@@ -25,10 +25,25 @@ for (const source of sourceByFile.values()) {
 }
 
 const archwikiSource = sourceByFile.get("archwiki.ts");
+const tldrSource = sourceByFile.get("tldr.ts");
+const thirdPartyNotices = await readFile(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "utf8");
 
 if (!archwikiSource) {
   throw new Error("Missing app/commands/domains/archwiki.ts");
 }
+
+if (!tldrSource) {
+  throw new Error("Missing app/commands/domains/tldr.ts. Run pnpm commands:sync-tldr.");
+}
+
+const licensingProblems = [
+  tldrSource.includes("AUTO-GENERATED FILE") ? "" : "tldr.ts must remain marked as generated",
+  tldrSource.includes('license: "CC BY 4.0"') ? "" : "tldr.ts must declare the tldr CC BY 4.0 license",
+  tldrSource.includes('repository: "https://github.com/tldr-pages/tldr"') ? "" : "tldr.ts must link to the tldr repository",
+  tldrSource.includes('commit: "') ? "" : "tldr.ts must record the source commit",
+  thirdPartyNotices.includes("tldr-pages/tldr") ? "" : "THIRD_PARTY_NOTICES.md must attribute tldr-pages",
+  thirdPartyNotices.includes("creativecommons.org/licenses/by/4.0/") ? "" : "THIRD_PARTY_NOTICES.md must link to CC BY 4.0",
+].filter(Boolean);
 
 function readStringList(name) {
   const start = archwikiSource.indexOf(`export const ${name} = [`);
@@ -58,10 +73,11 @@ const missingArchwikiCommands = archwikiCommands.filter((command) => {
   return !guideIds.has(command) && !coveredByVariant;
 });
 
-if (duplicateGuideIds.size > 0 || missingArchwikiCommands.length > 0) {
+if (duplicateGuideIds.size > 0 || missingArchwikiCommands.length > 0 || licensingProblems.length > 0) {
   const details = [
     duplicateGuideIds.size > 0 ? `Duplicate guide ids: ${[...duplicateGuideIds].join(", ")}` : "",
     missingArchwikiCommands.length > 0 ? `Missing ArchWiki commands: ${missingArchwikiCommands.join(", ")}` : "",
+    licensingProblems.length > 0 ? `Licensing checks: ${licensingProblems.join("; ")}` : "",
   ].filter(Boolean).join("\n");
 
   throw new Error(details);

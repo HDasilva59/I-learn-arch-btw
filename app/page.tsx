@@ -998,7 +998,7 @@ export default function Home() {
             {filteredGuides.length === 0 && <p className="encyclopedia-empty">No command matches that search.</p>}
           </section>
 
-          <footer className="page-footer"><span>Made for the curious.</span><span>I learn arch btw / 2026</span><a href="https://wiki.archlinux.org/" rel="noreferrer" target="_blank">Source material from Arch Wiki <Icon name="external" size={13} /></a></footer>
+          <footer className="page-footer"><span>Made for the curious.</span><span>I learn arch btw / 2026</span><a href="https://wiki.archlinux.org/" rel="noreferrer" target="_blank">Source material from Arch Wiki <Icon name="external" size={13} /></a><span>tldr-pages © 2014–present · <a href="https://github.com/tldr-pages/tldr" rel="noreferrer" target="_blank">source <Icon name="external" size={13} /></a> · <a href="https://creativecommons.org/licenses/by/4.0/" rel="noreferrer" target="_blank">CC BY 4.0 <Icon name="external" size={13} /></a></span></footer>
         </div>
       </section>
     </main>

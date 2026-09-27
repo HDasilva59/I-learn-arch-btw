@@ -20,6 +20,8 @@ const requiredMarkers = [
   "Review",
   "Achievements",
   "Command encyclopedia",
+  "tldr-pages",
+  "CC BY 4.0",
 ];
 
 const missingMarkers = requiredMarkers.filter((marker) => !html.includes(marker));
